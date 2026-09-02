@@ -22,9 +22,10 @@ namespace hl = xinsight::qt::highlights;
 namespace theme = xinsight::core::theme;
 
 EditorView::EditorView(TreeSitterEngine &engine, DocumentRegistry &registry, theme::ThemeManager &themeManager,
-                        CodeIntelligence &codeIntelligence, QWidget *parent)
+                        CodeIntelligence &codeIntelligence, xinsight::core::context::ContextEngine &contextEngine,
+                        QWidget *parent)
     : QsciScintilla(parent), engine_(engine), registry_(registry), themeManager_(themeManager),
-      codeIntelligence_(codeIntelligence) {
+      codeIntelligence_(codeIntelligence), contextEngine_(contextEngine) {
     // Container lexing: we drive all styling/folding ourselves from
     // tree-sitter results rather than through a QsciLexer (PRD 4.3).
     SendScintilla(SCI_SETLEXER, static_cast<unsigned long>(SCLEX_CONTAINER));
@@ -44,6 +45,7 @@ EditorView::EditorView(TreeSitterEngine &engine, DocumentRegistry &registry, the
 
     connect(this, &QsciScintilla::textChanged, this, &EditorView::onTextChanged);
     connect(this, &QsciScintilla::modificationChanged, this, [this](bool) { emit tabLabelChanged(); });
+    connect(this, &QsciScintilla::cursorPositionChanged, this, &EditorView::onCursorPositionChanged);
 }
 
 EditorView::~EditorView() {
@@ -345,4 +347,16 @@ QString EditorView::wordUnderCursor() const {
     int line = 0, index = 0;
     getCursorPosition(&line, &index);
     return wordAtLineIndex(line, index);
+}
+
+void EditorView::onCursorPositionChanged(int /*line*/, int /*index*/) { updateContextForCursor(); }
+
+void EditorView::updateContextForCursor() {
+    if (!document_) {
+        contextEngine_.onCursorMoved(std::string(), std::string());
+        return;
+    }
+
+    auto ctx = engine_.identifierAtByteOffset(*document_, static_cast<uint32_t>(currentByteOffset()));
+    contextEngine_.onCursorMoved(ctx ? ctx->lookupName : std::string(), filePath_.toStdString());
 }

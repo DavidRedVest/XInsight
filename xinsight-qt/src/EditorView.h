@@ -5,6 +5,7 @@
 #include <optional>
 #include <vector>
 
+#include "xinsight/core/context/ContextEngine.h"
 #include "xinsight/core/encoding/TextCodec.h"
 #include "xinsight/core/intel/CodeIntelligence.h"
 #include "xinsight/core/intel/TreeSitterEngine.h"
@@ -28,14 +29,17 @@ class EditorView final : public QsciScintilla {
     Q_OBJECT
 
 public:
-    // `engine`, `registry`, `themeManager` and `codeIntelligence` must
-    // outlive this EditorView; all are shared across all editor views
-    // (query compilation happens once, same-file views share one document,
-    // all views repaint from the same current theme, and every view's
-    // successful save feeds the same workspace symbol index, respectively).
+    // `engine`, `registry`, `themeManager`, `codeIntelligence` and
+    // `contextEngine` must outlive this EditorView; all are shared across
+    // all editor views (query compilation happens once, same-file views
+    // share one document, all views repaint from the same current theme,
+    // every view's successful save feeds the same workspace symbol index,
+    // and every view's cursor moves feed the same ambient context pane,
+    // respectively).
     explicit EditorView(xinsight::core::intel::TreeSitterEngine &engine, DocumentRegistry &registry,
                          xinsight::core::theme::ThemeManager &themeManager,
-                         xinsight::core::intel::CodeIntelligence &codeIntelligence, QWidget *parent = nullptr);
+                         xinsight::core::intel::CodeIntelligence &codeIntelligence,
+                         xinsight::core::context::ContextEngine &contextEngine, QWidget *parent = nullptr);
     ~EditorView() override;
 
     // Re-applies themeManager's current theme to this view's chrome and
@@ -85,6 +89,13 @@ public:
     // for F12/Shift+F12's "look this up" target.
     QString wordUnderCursor() const;
 
+    // Resolves the identifier under the current cursor (variable->type
+    // decode included, PRD 2.1) and notifies contextEngine_ -- called on
+    // every cursor move, and by MainWindow when this view becomes the
+    // active editor (switching panes/tabs doesn't itself move the cursor,
+    // but the ambient pane still needs to reflect wherever it already is).
+    void updateContextForCursor();
+
     xinsight::core::encoding::TextEncoding encoding() const { return encoding_; }
     xinsight::core::encoding::LineEnding lineEnding() const { return lineEnding_; }
 
@@ -102,6 +113,7 @@ signals:
 private slots:
     void onTextChanged();
     void onExternalFileChanged(const QString &path);
+    void onCursorPositionChanged(int line, int index);
 
 private:
     void initStyles();
@@ -118,6 +130,7 @@ private:
     DocumentRegistry &registry_;
     xinsight::core::theme::ThemeManager &themeManager_;
     xinsight::core::intel::CodeIntelligence &codeIntelligence_;
+    xinsight::core::context::ContextEngine &contextEngine_;
     std::optional<xinsight::core::intel::ParsedDocument> document_;
     std::vector<xinsight::core::intel::Symbol> outline_;
     QString filePath_; // empty iff untitled

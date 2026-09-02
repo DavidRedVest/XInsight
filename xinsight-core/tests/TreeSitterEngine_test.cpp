@@ -309,6 +309,108 @@ int main(void) {
     }
 }
 
+TEST_CASE("identifierAtByteOffset: variable-to-type decode (PRD 2.1)") {
+    TreeSitterEngine engine;
+    std::string source = R"(
+struct Widget {
+    int value;
+};
+
+int compute(struct Widget *w) {
+    int total = w->value;
+    return total;
+}
+)";
+
+    ParsedDocument doc = engine.parse(Language::C, source);
+    REQUIRE(doc.valid());
+
+    auto offsetOf = [&](std::string_view needle) -> uint32_t {
+        auto pos = source.find(needle);
+        REQUIRE(pos != std::string::npos);
+        return static_cast<uint32_t>(pos);
+    };
+
+    SUBCASE("cursor directly on a type_identifier resolves to itself") {
+        uint32_t off = offsetOf("Widget *w") + 1; // inside "Widget"
+        auto ctx = engine.identifierAtByteOffset(doc, off);
+        REQUIRE(ctx.has_value());
+        CHECK(ctx->lookupName == "Widget");
+        CHECK_FALSE(ctx->isVariableType);
+    }
+
+    SUBCASE("cursor on a pointer parameter's own declaration site decodes to its type") {
+        uint32_t off = offsetOf("*w)") + 1; // the 'w' right after '*'
+        auto ctx = engine.identifierAtByteOffset(doc, off);
+        REQUIRE(ctx.has_value());
+        CHECK(ctx->lookupName == "Widget");
+        CHECK(ctx->isVariableType);
+    }
+
+    SUBCASE("cursor on a later use of that variable also decodes to its type") {
+        uint32_t off = offsetOf("w->value"); // the single-byte use-site 'w' itself
+        auto ctx = engine.identifierAtByteOffset(doc, off);
+        REQUIRE(ctx.has_value());
+        CHECK(ctx->lookupName == "Widget");
+        CHECK(ctx->isVariableType);
+    }
+
+    SUBCASE("primitive-typed local: declaration site decodes to 'int'") {
+        uint32_t off = offsetOf("total = w") + 1; // inside 'total' at its declaration
+        auto ctx = engine.identifierAtByteOffset(doc, off);
+        REQUIRE(ctx.has_value());
+        CHECK(ctx->lookupName == "int");
+        CHECK(ctx->isVariableType);
+    }
+
+    SUBCASE("primitive-typed local: later use also decodes to 'int'") {
+        uint32_t off = offsetOf("return total") + 8; // inside 'total' in the return statement
+        auto ctx = engine.identifierAtByteOffset(doc, off);
+        REQUIRE(ctx.has_value());
+        CHECK(ctx->lookupName == "int");
+        CHECK(ctx->isVariableType);
+    }
+
+    SUBCASE("function name with no local declaration falls back to itself") {
+        uint32_t off = offsetOf("compute(") + 1; // inside 'compute'
+        auto ctx = engine.identifierAtByteOffset(doc, off);
+        REQUIRE(ctx.has_value());
+        CHECK(ctx->lookupName == "compute");
+        CHECK_FALSE(ctx->isVariableType);
+    }
+
+    SUBCASE("cursor on punctuation resolves to nothing") {
+        uint32_t off = offsetOf("->value"); // the '-' of '->'
+        auto ctx = engine.identifierAtByteOffset(doc, off);
+        CHECK_FALSE(ctx.has_value());
+    }
+}
+
+TEST_CASE("Cpp: identifierAtByteOffset decodes a class-typed local variable") {
+    TreeSitterEngine engine;
+    std::string source = R"(
+class Gadget {
+public:
+    int value;
+};
+
+void use(Gadget g) {
+    g.value = 1;
+}
+)";
+
+    ParsedDocument doc = engine.parse(Language::Cpp, source);
+    REQUIRE(doc.valid());
+
+    auto pos = source.find("g.value");
+    REQUIRE(pos != std::string::npos);
+
+    auto ctx = engine.identifierAtByteOffset(doc, static_cast<uint32_t>(pos));
+    REQUIRE(ctx.has_value());
+    CHECK(ctx->lookupName == "Gadget");
+    CHECK(ctx->isVariableType);
+}
+
 TEST_CASE("Cpp: references includes type_identifier and field_identifier occurrences") {
     TreeSitterEngine engine;
     std::string source = R"(

@@ -5,6 +5,7 @@
 
 #include "DocumentRegistry.h"
 #include "QtUiDispatcher.h"
+#include "xinsight/core/context/ContextEngine.h"
 #include "xinsight/core/intel/CodeIntelligence.h"
 #include "xinsight/core/intel/TreeSitterEngine.h"
 #include "xinsight/core/nav/NavigationEngine.h"
@@ -17,6 +18,7 @@ class OutlineView;
 class EditorView;
 class SplitManager;
 class SearchPanel;
+class ContextPaneView;
 class QDockWidget;
 
 class MainWindow final : public QMainWindow {
@@ -26,7 +28,8 @@ public:
     explicit MainWindow(QWidget *parent = nullptr);
     // Explicit (not compiler-generated): splitManager_ owns EditorViews
     // that hold references to treeSitterEngine_/documentRegistry_/
-    // themeManager_ below. Those are plain members, destroyed by the
+    // themeManager_/codeIntelligence_/contextEngine_ below. Those are
+    // plain members, destroyed by the
     // implicit part of this destructor right after its body runs -- but
     // Qt only tears down child widgets (deleting the EditorViews) later,
     // inside ~QWidget(), which runs *after* that. Left alone, EditorView's
@@ -76,12 +79,15 @@ private:
     // Declaration order matters: uiDispatcher_ must outlive/precede
     // projectModel_/searchEngine_/codeIntelligence_, which hold a
     // reference to it; codeIntelligence_ must likewise be declared (and
-    // thus destroyed) before treeSitterEngine_, whose reference it holds.
+    // thus destroyed) before treeSitterEngine_, whose reference it holds;
+    // contextEngine_ must be declared (destroyed) after codeIntelligence_,
+    // whose reference *it* holds.
     QtUiDispatcher uiDispatcher_;
     xinsight::core::intel::TreeSitterEngine treeSitterEngine_;
     DocumentRegistry documentRegistry_;
     xinsight::core::theme::ThemeManager themeManager_;
     xinsight::core::intel::CodeIntelligence codeIntelligence_;
+    xinsight::core::context::ContextEngine contextEngine_;
     xinsight::core::project::ProjectModel projectModel_;
     xinsight::core::search::SearchEngine searchEngine_;
     xinsight::core::nav::NavigationEngine navigationEngine_;
@@ -90,6 +96,7 @@ private:
     SplitManager *splitManager_ = nullptr;
     SearchPanel *searchPanel_ = nullptr;
     QDockWidget *searchDock_ = nullptr;
+    ContextPaneView *contextPaneView_ = nullptr;
     EditorView *activeEditor_ = nullptr;
     QMetaObject::Connection activeEditorReparsedConnection_;
     QMetaObject::Connection activeEditorLabelConnection_;

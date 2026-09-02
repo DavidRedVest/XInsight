@@ -21,6 +21,7 @@ add_executable(xinsight-qt
   src/HighlightStyles.cpp
   src/DocumentRegistry.cpp
   src/SearchPanel.cpp
+  src/ContextPaneView.cpp
 )
 
 target_include_directories(xinsight-qt PRIVATE src)

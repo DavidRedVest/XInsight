@@ -2,6 +2,7 @@
 
 #include <QTabWidget>
 
+#include "xinsight/core/context/ContextEngine.h"
 #include "xinsight/core/intel/CodeIntelligence.h"
 #include "xinsight/core/intel/TreeSitterEngine.h"
 #include "xinsight/core/theme/Theme.h"
@@ -17,7 +18,8 @@ class EditorPane final : public QTabWidget {
 public:
     explicit EditorPane(xinsight::core::intel::TreeSitterEngine &engine, DocumentRegistry &registry,
                          xinsight::core::theme::ThemeManager &themeManager,
-                         xinsight::core::intel::CodeIntelligence &codeIntelligence, QWidget *parent = nullptr);
+                         xinsight::core::intel::CodeIntelligence &codeIntelligence,
+                         xinsight::core::context::ContextEngine &contextEngine, QWidget *parent = nullptr);
 
     // Opens `absolutePath` and makes it current. If this pane already has a
     // tab open on that exact path, switches to it instead of creating a
@@ -46,4 +48,5 @@ private:
     DocumentRegistry &registry_;
     xinsight::core::theme::ThemeManager &themeManager_;
     xinsight::core::intel::CodeIntelligence &codeIntelligence_;
+    xinsight::core::context::ContextEngine &contextEngine_;
 };

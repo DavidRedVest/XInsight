@@ -12,6 +12,7 @@
 #include <QStatusBar>
 #include <QString>
 
+#include "ContextPaneView.h"
 #include "EditorView.h"
 #include "OutlineView.h"
 #include "ProjectTreeView.h"
@@ -43,13 +44,14 @@ MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent), themeManager_(userConfigDir()),
       codeIntelligence_(treeSitterEngine_, std::make_shared<xinsight::core::intel::InMemorySymbolIndex>(),
                          uiDispatcher_),
-      projectModel_(uiDispatcher_), searchEngine_(uiDispatcher_) {
+      contextEngine_(codeIntelligence_, uiDispatcher_), projectModel_(uiDispatcher_), searchEngine_(uiDispatcher_) {
     setWindowTitle(QStringLiteral("XInsight %1")
                         .arg(QString::fromUtf8(xinsight::core::version().data(),
                                                 static_cast<int>(xinsight::core::version().size()))));
     resize(1200, 800);
 
-    splitManager_ = new SplitManager(treeSitterEngine_, documentRegistry_, themeManager_, codeIntelligence_, this);
+    splitManager_ = new SplitManager(treeSitterEngine_, documentRegistry_, themeManager_, codeIntelligence_,
+                                      contextEngine_, this);
     setCentralWidget(splitManager_);
 
     projectTree_ = new ProjectTreeView(this);
@@ -63,6 +65,14 @@ MainWindow::MainWindow(QWidget *parent)
     outlineDock->setWidget(outlineView_);
     outlineDock->setFeatures(QDockWidget::DockWidgetMovable | QDockWidget::DockWidgetClosable);
     addDockWidget(Qt::RightDockWidgetArea, outlineDock);
+
+    // PRD 2.1: ambient context pane, docked below the editor by default
+    // (position is user-movable like any dock, per PRD 2.2).
+    contextPaneView_ = new ContextPaneView(this);
+    auto *contextDock = new QDockWidget(tr("Context"), this);
+    contextDock->setWidget(contextPaneView_);
+    contextDock->setFeatures(QDockWidget::DockWidgetMovable | QDockWidget::DockWidgetClosable);
+    addDockWidget(Qt::BottomDockWidgetArea, contextDock);
 
     searchPanel_ = new SearchPanel(this);
     searchDock_ = new QDockWidget(tr("Search"), this);
@@ -80,6 +90,7 @@ MainWindow::MainWindow(QWidget *parent)
     // gets reopened -- without it there's no way back in once closed.
     viewMenu->addAction(projectDock->toggleViewAction());
     viewMenu->addAction(outlineDock->toggleViewAction());
+    viewMenu->addAction(contextDock->toggleViewAction());
     viewMenu->addAction(searchDock_->toggleViewAction());
 
     auto *openProjectAction = fileMenu->addAction(tr("&Open Project..."));
@@ -202,6 +213,11 @@ MainWindow::MainWindow(QWidget *parent)
     });
     codeIntelligence_.setOnIndexComplete([this]() { updateStatusForActiveEditor(); });
 
+    contextEngine_.setOnContext(
+        [this](xinsight::core::context::ContextResult result) { contextPaneView_->showResult(result); });
+    connect(contextPaneView_, &ContextPaneView::drillDownRequested, this,
+            [this](const QString &path, int line, int column) { jumpTo(path, line, column); });
+
     projectModel_.setOnScanComplete([this](std::vector<FileEntry> entries) {
         projectTree_->populate(entries);
 
@@ -301,8 +317,13 @@ void MainWindow::onActiveEditorChanged(EditorView *editor) {
         activeEditorLabelConnection_ =
             connect(editor, &EditorView::tabLabelChanged, this, [this]() { updateStatusForActiveEditor(); });
         outlineView_->populate(editor->outline());
+        // Switching panes/tabs doesn't itself move the cursor, but the
+        // ambient context pane still needs to reflect wherever the newly
+        // active editor's cursor already is (PRD 2.1).
+        editor->updateContextForCursor();
     } else {
         outlineView_->populate({});
+        contextEngine_.onCursorMoved(std::string(), std::string());
     }
 
     updateStatusForActiveEditor();

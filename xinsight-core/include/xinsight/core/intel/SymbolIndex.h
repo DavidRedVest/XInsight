@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstddef>
+#include <shared_mutex>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -76,6 +77,13 @@ public:
 // v1's only ISymbolIndex backend (PRD 5.3.1): plain in-memory hash maps,
 // rebuilt on every app start via a full project scan. No persistence --
 // that's explicitly deferred to a future SqliteSymbolIndex, not a v1 goal.
+//
+// Thread-safe (shared_mutex: concurrent reads, exclusive writes): writes
+// happen on whichever thread CodeIntelligence chooses to call updateFile/
+// removeFile/clear from (currently always the UI thread), but reads now
+// also happen from ContextEngine's background debounce-worker thread
+// (PRD 2.1) -- an unsynchronized read racing a same-time background-index
+// write would otherwise be undefined behavior on the underlying maps.
 class InMemorySymbolIndex final : public ISymbolIndex {
 public:
     void updateFile(const std::string &file, std::vector<Symbol> symbols,
@@ -95,6 +103,12 @@ private:
         std::vector<std::string> referenceNames;
     };
 
+    // Assumes mutex_ is already held exclusively; shared by removeFile()
+    // and updateFile() (which must not re-lock a non-recursive mutex it
+    // already holds).
+    void removeFileLocked(const std::string &file);
+
+    mutable std::shared_mutex mutex_;
     std::unordered_map<std::string, std::vector<SymbolLocation>> definitionsByName_;
     std::unordered_map<std::string, std::vector<ReferenceLocation>> referencesByName_;
     std::unordered_map<std::string, FileEntry> filesIndexed_;

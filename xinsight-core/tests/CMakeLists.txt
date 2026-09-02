@@ -9,6 +9,7 @@ add_executable(xinsight-core-tests
   Theme_test.cpp
   SymbolIndex_test.cpp
   CodeIntelligence_test.cpp
+  ContextEngine_test.cpp
 )
 
 target_link_libraries(xinsight-core-tests PRIVATE

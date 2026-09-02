@@ -12,6 +12,7 @@ add_library(xinsight-core STATIC
   src/intel/TreeSitterEngine.cpp
   src/intel/InMemorySymbolIndex.cpp
   src/intel/CodeIntelligence.cpp
+  src/context/ContextEngine.cpp
   src/project/ProjectModel.cpp
   src/encoding/TextCodec.cpp
   src/search/SearchEngine.cpp

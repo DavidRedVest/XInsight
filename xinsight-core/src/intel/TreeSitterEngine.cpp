@@ -3,6 +3,8 @@
 #include <algorithm>
 #include <array>
 #include <cctype>
+#include <cstdint>
+#include <functional>
 #include <regex>
 #include <stdexcept>
 #include <string>
@@ -202,6 +204,139 @@ std::optional<SymbolKind> symbolKindForDefinitionCapture(std::string_view name) 
     return std::nullopt;
 }
 
+// Wrapper declarator node types tree-sitter interposes between an
+// identifier and its owning declaration/parameter_declaration/
+// field_declaration (e.g. `*w` is a pointer_declarator wrapping the
+// identifier `w`). Walking up through these is how identifierAtByteOffset
+// finds "the declaration this identifier is the name of".
+bool isDeclaratorWrapper(std::string_view type) {
+    static constexpr std::string_view kWrappers[] = {
+        "pointer_declarator", "array_declarator",   "init_declarator",
+        "reference_declarator", "parenthesized_declarator", "attributed_declarator",
+    };
+    for (auto w : kWrappers) {
+        if (w == type) return true;
+    }
+    return false;
+}
+
+bool isDeclarationHolder(std::string_view type) {
+    return type == "declaration" || type == "parameter_declaration" || type == "field_declaration";
+}
+
+// Extracts the plain type name text from a declaration's `type:` field
+// node. struct/union/enum/class specifiers carry the name in their own
+// `name:` field; a bare type_identifier (typedef'd name) already is the
+// name; primitive/sized types have no separate name node, so their own
+// text is used as a best-effort lookup key (harmless if it doesn't match
+// anything in the symbol index -- PRD's accepted fallback).
+std::optional<std::string> typeNameFromTypeField(TSNode typeNode, std::string_view source) {
+    if (ts_node_is_null(typeNode)) return std::nullopt;
+    std::string_view type = ts_node_type(typeNode);
+
+    if (type == "type_identifier") return std::string(nodeText(typeNode, source));
+
+    if (type == "struct_specifier" || type == "union_specifier" || type == "enum_specifier" ||
+        type == "class_specifier") {
+        TSNode nameNode = ts_node_child_by_field_name(typeNode, "name", 4);
+        if (ts_node_is_null(nameNode)) return std::nullopt; // anonymous struct/union/enum
+        return std::string(nodeText(nameNode, source));
+    }
+
+    // primitive_type, sized_type_specifier, template_type,
+    // qualified_identifier, decltype, dependent_type, ... : no dedicated
+    // name field, so just use the node's own text.
+    return std::string(nodeText(typeNode, source));
+}
+
+// Case A: `node` is (possibly wrapped in pointer/array/init/... declarator
+// nodes) the "declarator" of an enclosing declaration/parameter_declaration
+// /field_declaration -- i.e. the cursor is on the variable's own
+// declaration site. Returns that declaration's resolved type name.
+std::optional<std::string> declaredTypeAtDeclarationSite(TSNode node, std::string_view source) {
+    TSNode current = node;
+    while (!ts_node_is_null(current)) {
+        TSNode parent = ts_node_parent(current);
+        if (ts_node_is_null(parent)) return std::nullopt;
+
+        std::string_view parentType = ts_node_type(parent);
+        if (isDeclarationHolder(parentType)) {
+            // Multiple comma-separated declarators (`int a, *b;`) aren't
+            // distinguished here -- child_by_field_name returns the first
+            // one, so a match against a later declarator in the same
+            // statement is missed. Accepted v1 limitation (rare style).
+            TSNode declarator = ts_node_child_by_field_name(parent, "declarator", 10);
+            if (!ts_node_is_null(declarator) && ts_node_eq(declarator, current)) {
+                TSNode typeField = ts_node_child_by_field_name(parent, "type", 4);
+                return typeNameFromTypeField(typeField, source);
+            }
+            return std::nullopt;
+        }
+
+        if (!isDeclaratorWrapper(parentType)) return std::nullopt;
+        current = parent;
+    }
+    return std::nullopt;
+}
+
+// Case B: `node` is a use of `name` somewhere other than its declaration
+// site. Walks up to the enclosing function_definition (covering both its
+// parameter list and body) and searches its declarations for the nearest
+// one (by start byte, preferring one that precedes `node`) whose
+// declarator name matches, returning its resolved type name.
+std::optional<std::string> declaredTypeFromEnclosingScope(TSNode node, std::string_view name,
+                                                           std::string_view source) {
+    TSNode scope = ts_node_parent(node);
+    while (!ts_node_is_null(scope) && std::string_view(ts_node_type(scope)) != "function_definition") {
+        scope = ts_node_parent(scope);
+    }
+    if (ts_node_is_null(scope)) return std::nullopt;
+
+    uint32_t cursorStart = ts_node_start_byte(node);
+    std::optional<std::string> best;
+    uint32_t bestDistance = UINT32_MAX;
+    bool bestPrecedes = false;
+
+    std::function<void(TSNode)> visit = [&](TSNode n) {
+        std::string_view type = ts_node_type(n);
+        // Don't descend into a nested function body -- its locals aren't
+        // in scope here. (Nested `function_definition` doesn't occur in
+        // C; harmless guard for C++ member/lambda edge cases.)
+        if (isDeclarationHolder(type)) {
+            TSNode declarator = ts_node_child_by_field_name(n, "declarator", 10);
+            if (!ts_node_is_null(declarator)) {
+                TSNode innermost = declarator;
+                while (isDeclaratorWrapper(ts_node_type(innermost))) {
+                    TSNode inner = ts_node_child_by_field_name(innermost, "declarator", 10);
+                    if (ts_node_is_null(inner)) break;
+                    innermost = inner;
+                }
+                if (nodeText(innermost, source) == name) {
+                    uint32_t declStart = ts_node_start_byte(n);
+                    bool precedes = declStart <= cursorStart;
+                    uint32_t distance = precedes ? cursorStart - declStart : declStart - cursorStart;
+                    // Prefer any preceding declaration over any
+                    // non-preceding one; within the same precedes-ness,
+                    // prefer the closest.
+                    bool better = (precedes && !bestPrecedes) || (precedes == bestPrecedes && distance < bestDistance);
+                    if (better) {
+                        TSNode typeField = ts_node_child_by_field_name(n, "type", 4);
+                        best = typeNameFromTypeField(typeField, source);
+                        bestDistance = distance;
+                        bestPrecedes = precedes;
+                    }
+                }
+            }
+            return; // a declaration's internals (initializer expressions, ...) aren't more declarations
+        }
+        uint32_t count = ts_node_named_child_count(n);
+        for (uint32_t i = 0; i < count; ++i) visit(ts_node_named_child(n, i));
+    };
+    visit(scope);
+
+    return best;
+}
+
 } // namespace
 
 struct ParsedDocument::Impl {
@@ -385,6 +520,34 @@ std::vector<FoldRange> TreeSitterEngine::folds(const ParsedDocument &doc) const 
     });
 
     return result;
+}
+
+std::optional<CursorContext> TreeSitterEngine::identifierAtByteOffset(const ParsedDocument &doc,
+                                                                       uint32_t byteOffset) const {
+    if (!doc.valid()) return std::nullopt;
+
+    TSNode root = ts_tree_root_node(doc.impl_->tree);
+    TSNode node = ts_node_descendant_for_byte_range(root, byteOffset, byteOffset);
+    if (ts_node_is_null(node)) return std::nullopt;
+
+    std::string_view type = ts_node_type(node);
+    std::string_view source = doc.impl_->source;
+
+    if (type == "type_identifier") {
+        return CursorContext{std::string(nodeText(node, source)), false};
+    }
+    if (type != "identifier") return std::nullopt;
+
+    std::string name(nodeText(node, source));
+
+    if (auto declSiteType = declaredTypeAtDeclarationSite(node, source)) {
+        return CursorContext{*declSiteType, true};
+    }
+    if (auto scopeType = declaredTypeFromEnclosingScope(node, name, source)) {
+        return CursorContext{*scopeType, true};
+    }
+
+    return CursorContext{name, false};
 }
 
 std::vector<HighlightSpan> TreeSitterEngine::highlights(const ParsedDocument &doc) const {

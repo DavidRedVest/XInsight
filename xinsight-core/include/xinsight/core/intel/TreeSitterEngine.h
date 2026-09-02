@@ -64,6 +64,16 @@ struct FoldRange {
     uint32_t endRow = 0;
 };
 
+// What to look up in the symbol index for the identifier under the cursor
+// (PRD 2.1's ambient context pane). `lookupName` is either the identifier
+// itself (already a type, function, macro, ...) or -- for a variable --
+// its resolved declared type name, per PRD 2.1's "变量→类型解码": "光标落在
+// 变量上时,不止显示变量声明,而是顺着声明找到其类型并显示该类型的定义".
+struct CursorContext {
+    std::string lookupName;
+    bool isVariableType = false; // true when lookupName came from decoding a variable's type
+};
+
 // Mirrors tree-sitter's TSInputEdit. Byte offsets are UTF-8 byte offsets
 // into the document; points are 0-based (row, column-in-bytes).
 struct Edit {
@@ -126,6 +136,20 @@ public:
     std::vector<IdentifierOccurrence> references(const ParsedDocument& doc) const;
 
     std::vector<FoldRange> folds(const ParsedDocument& doc) const;
+
+    // Resolves the identifier under `byteOffset` for the context pane
+    // (PRD 2.1). A type name resolves to itself. A variable name -- at
+    // its own declaration site, or a later use within the same
+    // function/parameter scope -- resolves to its declared type's name
+    // (e.g. `struct S *psvar` -> "S"), approximated syntactically (no
+    // real scope resolution): nearest preceding same-name declaration
+    // within the enclosing function wins. Falls back to the identifier's
+    // own text when no type can be resolved (PRD's accepted "做不到时
+    // 回落为显示变量声明本身" -- CodeIntelligence just won't find a
+    // definition for an unresolvable local, which is an acceptable no-op
+    // outcome, not an error). Returns nullopt when the cursor isn't on an
+    // identifier-like token at all.
+    std::optional<CursorContext> identifierAtByteOffset(const ParsedDocument& doc, uint32_t byteOffset) const;
 
     // For C++ documents, runs query/c/highlights.scm then
     // query/cpp/highlights.scm and concatenates results; later entries in

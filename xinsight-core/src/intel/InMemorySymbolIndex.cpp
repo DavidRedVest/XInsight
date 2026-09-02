@@ -12,7 +12,7 @@ std::string toLower(std::string s) {
 }
 } // namespace
 
-void InMemorySymbolIndex::removeFile(const std::string &file) {
+void InMemorySymbolIndex::removeFileLocked(const std::string &file) {
     auto it = filesIndexed_.find(file);
     if (it == filesIndexed_.end()) return;
 
@@ -39,9 +39,15 @@ void InMemorySymbolIndex::removeFile(const std::string &file) {
     filesIndexed_.erase(it);
 }
 
+void InMemorySymbolIndex::removeFile(const std::string &file) {
+    std::unique_lock lock(mutex_);
+    removeFileLocked(file);
+}
+
 void InMemorySymbolIndex::updateFile(const std::string &file, std::vector<Symbol> symbols,
                                       std::vector<IdentifierOccurrence> references) {
-    removeFile(file); // clear any prior entries for this file first
+    std::unique_lock lock(mutex_);
+    removeFileLocked(file); // clear any prior entries for this file first
 
     FileEntry entry;
     entry.definitionNames.reserve(symbols.size());
@@ -74,24 +80,28 @@ void InMemorySymbolIndex::updateFile(const std::string &file, std::vector<Symbol
 }
 
 void InMemorySymbolIndex::clear() {
+    std::unique_lock lock(mutex_);
     definitionsByName_.clear();
     referencesByName_.clear();
     filesIndexed_.clear();
 }
 
 std::vector<SymbolLocation> InMemorySymbolIndex::findDefinitions(const std::string &name) const {
+    std::shared_lock lock(mutex_);
     auto it = definitionsByName_.find(name);
     if (it == definitionsByName_.end()) return {};
     return it->second;
 }
 
 std::vector<ReferenceLocation> InMemorySymbolIndex::findReferences(const std::string &name) const {
+    std::shared_lock lock(mutex_);
     auto it = referencesByName_.find(name);
     if (it == referencesByName_.end()) return {};
     return it->second;
 }
 
 std::vector<SymbolLocation> InMemorySymbolIndex::searchSymbols(const std::string &query, size_t maxResults) const {
+    std::shared_lock lock(mutex_);
     std::string lowerQuery = toLower(query);
     std::vector<SymbolLocation> matches;
     for (const auto &[name, locations] : definitionsByName_) {
