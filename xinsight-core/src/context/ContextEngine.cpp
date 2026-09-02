@@ -16,7 +16,54 @@ using xinsight::core::intel::SymbolLocation;
 
 constexpr auto kDebounceWindow = std::chrono::milliseconds(200); // PRD 2.1: 150-250ms
 constexpr int kContextLinesBefore = 2;
-constexpr int kContextLinesAfter = 8;
+constexpr int kFallbackLinesAfter = 8; // for symbols with no brace body to bound the snippet
+constexpr uint32_t kMaxBraceScanLines = 2000; // defensive bound against a mismatched-brace scan runaway
+
+// PRD 2.1: "窗格显示...函数体或定义行 ± 若干行" -- kinds whose definition has
+// a `{ ... }` body worth showing in full, rather than a fixed-size window
+// that could truncate mid-function.
+bool hasBracedBody(xinsight::core::intel::SymbolKind kind) {
+    using xinsight::core::intel::SymbolKind;
+    switch (kind) {
+    case SymbolKind::Function:
+    case SymbolKind::Method:
+    case SymbolKind::Struct:
+    case SymbolKind::Union:
+    case SymbolKind::Enum:
+    case SymbolKind::Class:
+    case SymbolKind::Namespace:
+        return true;
+    case SymbolKind::Typedef:
+    case SymbolKind::Macro:
+    case SymbolKind::GlobalVariable:
+        return false;
+    }
+    return false;
+}
+
+// Finds the line (0-based) of the closing brace matching the first '{'
+// found at or after `searchFromLine` -- a lightweight text-based counter,
+// not a real parse (doesn't special-case braces inside string/char
+// literals or comments). A rare-miss approximation is an accepted
+// trade-off here per PRD 2.1's own "近似实现" framing for this pane;
+// missing a match just falls back to the fixed-window snippet below.
+std::optional<uint32_t> findMatchingBraceLine(const std::vector<std::string_view> &lines, uint32_t searchFromLine) {
+    uint32_t depth = 0;
+    bool opened = false;
+    uint32_t scanLimit = std::min<uint32_t>(searchFromLine + kMaxBraceScanLines, static_cast<uint32_t>(lines.size()));
+    for (uint32_t row = searchFromLine; row < scanLimit; ++row) {
+        for (char c : lines[row]) {
+            if (c == '{') {
+                ++depth;
+                opened = true;
+            } else if (c == '}') {
+                if (depth > 0) --depth;
+                if (opened && depth == 0) return row;
+            }
+        }
+    }
+    return std::nullopt;
+}
 
 std::optional<std::vector<uint8_t>> readFileBytes(const std::filesystem::path &path) {
     std::ifstream in(path, std::ios::binary);
@@ -131,9 +178,17 @@ ContextResult ContextEngine::resolve(const Request &request) const {
         std::vector<std::string_view> lines = splitLines(decoded.utf8Text);
         if (def.startRow >= lines.size()) continue;
 
+        uint32_t lastLine = static_cast<uint32_t>(lines.size()) - 1;
         uint32_t startLine = def.startRow > kContextLinesBefore ? def.startRow - kContextLinesBefore : 0;
-        uint32_t endLine = std::min<uint32_t>(def.startRow + kContextLinesAfter,
-                                               static_cast<uint32_t>(lines.size()) - 1);
+
+        uint32_t endLine;
+        if (hasBracedBody(def.kind)) {
+            auto closingLine = findMatchingBraceLine(lines, def.startRow);
+            endLine = closingLine ? std::min(*closingLine, lastLine)
+                                   : std::min<uint32_t>(def.startRow + kFallbackLinesAfter, lastLine);
+        } else {
+            endLine = std::min<uint32_t>(def.startRow + kFallbackLinesAfter, lastLine);
+        }
 
         std::string snippet;
         for (uint32_t i = startLine; i <= endLine; ++i) {

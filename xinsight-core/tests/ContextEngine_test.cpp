@@ -106,6 +106,54 @@ TEST_CASE("ContextEngine: resolves a real definition after the debounce window")
     CHECK(result.candidates[0].kind == SymbolKind::Function);
 }
 
+TEST_CASE("ContextEngine: shows the full function body, not a fixed-size window that truncates it") {
+    TempContextDir dir;
+    // 15 body lines -- longer than the old fixed 8-line-after window, which
+    // used to cut this off mid-function (the bug this test guards against).
+    fs::path fileA = dir.writeFile("a.c", R"(int long_function(int value) {
+    int total = 0;
+    total += value;
+    total += value;
+    total += value;
+    total += value;
+    total += value;
+    total += value;
+    total += value;
+    total += value;
+    total += value;
+    total += value;
+    total += value;
+    total += value;
+    total += value;
+    return total;
+}
+
+int unrelated_after(void) { return 0; }
+)");
+
+    TreeSitterEngine engine;
+    xinsight::core::testing::ImmediateUiDispatcher dispatcher;
+    CodeIntelligence intel(engine, std::make_shared<InMemorySymbolIndex>(), dispatcher);
+    indexAndWait(intel, {fileA});
+
+    ContextEngine context(intel, dispatcher);
+    std::promise<ContextResult> received;
+    auto future = received.get_future();
+    context.setOnContext([&](ContextResult result) { received.set_value(std::move(result)); });
+
+    context.onCursorMoved("long_function", fileA.string());
+
+    REQUIRE(future.wait_for(std::chrono::seconds(5)) == std::future_status::ready);
+    ContextResult result = future.get();
+
+    REQUIRE(result.candidates.size() == 1);
+    const ContextCandidate &candidate = result.candidates[0];
+    CHECK(candidate.snippet.find("return total;") != std::string::npos);
+    // The closing brace of long_function must be included, but the
+    // following, unrelated function must not have leaked into the snippet.
+    CHECK(candidate.snippet.find("unrelated_after") == std::string::npos);
+}
+
 TEST_CASE("ContextEngine: a later cursor move before the debounce elapses supersedes the earlier one") {
     TempContextDir dir;
     fs::path fileA = dir.writeFile("a.c", "int foo(void) { return 1; }\nint bar(void) { return 2; }\n");
