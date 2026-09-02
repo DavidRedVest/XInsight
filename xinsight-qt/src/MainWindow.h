@@ -22,6 +22,17 @@ class MainWindow final : public QMainWindow {
 
 public:
     explicit MainWindow(QWidget *parent = nullptr);
+    // Explicit (not compiler-generated): splitManager_ owns EditorViews
+    // that hold references to treeSitterEngine_/documentRegistry_/
+    // themeManager_ below. Those are plain members, destroyed by the
+    // implicit part of this destructor right after its body runs -- but
+    // Qt only tears down child widgets (deleting the EditorViews) later,
+    // inside ~QWidget(), which runs *after* that. Left alone, EditorView's
+    // destructor dereferences an already-destroyed DocumentRegistry&
+    // (SIGSEGV on quit). Deleting splitManager_ here, before the body
+    // returns, forces EditorView destruction while those refs are still
+    // valid.
+    ~MainWindow() override;
 
 protected:
     void closeEvent(QCloseEvent *event) override;

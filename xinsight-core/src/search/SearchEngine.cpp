@@ -91,6 +91,7 @@ void SearchEngine::setOnComplete(CompleteCallback callback) {
 
 void SearchEngine::cancel() {
     cancelRequested_.store(true);
+    if (reproc::process *process = activeProcess_.load()) process->kill();
 }
 
 void SearchEngine::search(std::string query, std::filesystem::path root, SearchOptions options) {
@@ -103,8 +104,9 @@ void SearchEngine::search(std::string query, std::filesystem::path root, SearchO
     CompleteCallback completeCallback = onComplete_;
     IUiDispatcher *dispatcher = &dispatcher_;
     std::atomic<bool> *cancelFlag = &cancelRequested_;
+    std::atomic<reproc::process *> *activeProcessSlot = &activeProcess_;
 
-    searchThread_ = std::thread([args, resultsCallback, completeCallback, dispatcher, cancelFlag] {
+    searchThread_ = std::thread([args, resultsCallback, completeCallback, dispatcher, cancelFlag, activeProcessSlot] {
         reproc::process process;
         std::error_code ec = process.start(args);
 
@@ -112,6 +114,8 @@ void SearchEngine::search(std::string query, std::filesystem::path root, SearchO
         bool cancelled = false;
 
         if (!ec) {
+            activeProcessSlot->store(&process);
+
             std::string buffer;
             std::vector<SearchResult> pending;
             std::array<uint8_t, 8192> chunk{};
@@ -125,13 +129,15 @@ void SearchEngine::search(std::string query, std::filesystem::path root, SearchO
 
             while (true) {
                 if (cancelFlag->load()) {
-                    cancelled = true;
                     process.kill();
                     break;
                 }
 
                 auto [bytesRead, readEc] = process.read(reproc::stream::out, chunk.data(), chunk.size());
-                if (readEc) break; // EOF (process exited) or a real error either way stop reading
+                // EOF (process exited), a real error, or killed out from
+                // under us by cancel() on another thread -- either way stop
+                // reading; cancelFlag (checked below) tells them apart.
+                if (readEc) break;
 
                 buffer.append(reinterpret_cast<const char *>(chunk.data()), bytesRead);
 
@@ -148,8 +154,10 @@ void SearchEngine::search(std::string query, std::filesystem::path root, SearchO
                 }
             }
 
+            cancelled = cancelFlag->load();
             flush();
             process.wait(reproc::milliseconds(2000));
+            activeProcessSlot->store(nullptr);
         }
 
         if (completeCallback) {

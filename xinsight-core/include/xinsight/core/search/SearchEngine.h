@@ -11,6 +11,10 @@
 
 #include "xinsight/core/IUiDispatcher.h"
 
+namespace reproc {
+class process;
+}
+
 namespace xinsight::core::search {
 
 struct SearchOptions {
@@ -57,6 +61,12 @@ public:
     void search(std::string query, std::filesystem::path root, SearchOptions options = {});
 
     // Requests cancellation of an in-flight search; safe to call when idle.
+    // Kills the ripgrep child process directly (not just a flag the search
+    // thread polls) so a thread blocked in a synchronous read() unblocks
+    // immediately rather than waiting for rg to produce more output or
+    // exit on its own -- without this, destroying a SearchEngine while a
+    // search is in flight can hang (see joinSearchThread()) long enough
+    // that the OS treats a forced quit as a crash.
     void cancel();
 
 private:
@@ -65,6 +75,11 @@ private:
     IUiDispatcher &dispatcher_;
     std::thread searchThread_;
     std::atomic<bool> cancelRequested_{false};
+    // Points at the `reproc::process` living on the search thread's stack
+    // while a search is running (null otherwise), so cancel() can kill it
+    // from any thread. Killing an already-exited or not-yet-started
+    // process is a safe no-op (reproc's own contract).
+    std::atomic<reproc::process *> activeProcess_{nullptr};
     ResultsCallback onResults_;
     CompleteCallback onComplete_;
 };

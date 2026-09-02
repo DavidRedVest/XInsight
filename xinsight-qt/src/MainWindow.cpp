@@ -67,6 +67,15 @@ MainWindow::MainWindow(QWidget *parent)
 
     auto *fileMenu = menuBar()->addMenu(tr("&File"));
 
+    auto *viewMenu = menuBar()->addMenu(tr("&View"));
+    // toggleViewAction() is the dock's own checkable show/hide action: it
+    // stays in sync when the user closes a dock via its title-bar close
+    // button, so this is also how a closed Project/Outline/Search panel
+    // gets reopened -- without it there's no way back in once closed.
+    viewMenu->addAction(projectDock->toggleViewAction());
+    viewMenu->addAction(outlineDock->toggleViewAction());
+    viewMenu->addAction(searchDock->toggleViewAction());
+
     auto *openProjectAction = fileMenu->addAction(tr("&Open Project..."));
     openProjectAction->setShortcut(QKeySequence(QStringLiteral("Ctrl+O")));
     connect(openProjectAction, &QAction::triggered, this, &MainWindow::openProject);
@@ -224,6 +233,11 @@ MainWindow::MainWindow(QWidget *parent)
     onActiveEditorChanged(splitManager_->activeEditor());
 
     statusBar()->showMessage(tr("Ready"));
+}
+
+MainWindow::~MainWindow() {
+    delete splitManager_;
+    splitManager_ = nullptr;
 }
 
 void MainWindow::onActiveEditorChanged(EditorView *editor) {
