@@ -7,6 +7,8 @@ add_executable(xinsight-core-tests
   SearchEngine_test.cpp
   NavigationEngine_test.cpp
   Theme_test.cpp
+  SymbolIndex_test.cpp
+  CodeIntelligence_test.cpp
 )
 
 target_link_libraries(xinsight-core-tests PRIVATE

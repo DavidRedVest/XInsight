@@ -22,14 +22,23 @@ namespace hl = xinsight::qt::highlights;
 namespace theme = xinsight::core::theme;
 
 EditorView::EditorView(TreeSitterEngine &engine, DocumentRegistry &registry, theme::ThemeManager &themeManager,
-                        QWidget *parent)
-    : QsciScintilla(parent), engine_(engine), registry_(registry), themeManager_(themeManager) {
+                        CodeIntelligence &codeIntelligence, QWidget *parent)
+    : QsciScintilla(parent), engine_(engine), registry_(registry), themeManager_(themeManager),
+      codeIntelligence_(codeIntelligence) {
     // Container lexing: we drive all styling/folding ourselves from
     // tree-sitter results rather than through a QsciLexer (PRD 4.3).
     SendScintilla(SCI_SETLEXER, static_cast<unsigned long>(SCLEX_CONTAINER));
 
     setFolding(QsciScintilla::BoxedTreeFoldStyle);
     setUtf8(true);
+
+    // Scintilla's default key map binds Ctrl+T (which QScintilla maps
+    // Cmd+T to on macOS) to SCI_LINETRANSPOSE ("swap current line with
+    // previous"), silently swapping two lines instead of letting
+    // MainWindow's "Go to Symbol in Workspace" QAction shortcut fire.
+    // Freeing it here is a one-time keymap fix, not a per-theme style
+    // concern, so it lives in the constructor rather than initStyles().
+    SendScintilla(SCI_CLEARCMDKEY, static_cast<unsigned long>('T' | (SCMOD_CTRL << 16)));
 
     initStyles();
 
@@ -159,6 +168,14 @@ bool EditorView::writeToDisk(const std::filesystem::path &path) {
     }
 
     SendScintilla(SCI_SETSAVEPOINT);
+
+    // PRD 8.7: index updates are deferred to save, not run on every
+    // keystroke. `document_` is already current -- every edit feeds
+    // tree-sitter's incremental reparse live, for highlighting -- so no
+    // extra reparse is needed here, just handing the already-fresh parse
+    // to the index.
+    if (document_) codeIntelligence_.updateFileIndex(path.string(), *document_);
+
     return true;
 }
 
@@ -322,4 +339,10 @@ void EditorView::gotoLineAndColumn(int line1Based, int byteColumn) {
 
 int EditorView::currentByteOffset() const {
     return static_cast<int>(SendScintilla(SCI_GETCURRENTPOS));
+}
+
+QString EditorView::wordUnderCursor() const {
+    int line = 0, index = 0;
+    getCursorPosition(&line, &index);
+    return wordAtLineIndex(line, index);
 }

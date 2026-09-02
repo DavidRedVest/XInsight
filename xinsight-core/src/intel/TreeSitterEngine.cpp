@@ -11,9 +11,11 @@
 
 #include "xinsight/core/queries/c_folds.h"
 #include "xinsight/core/queries/c_highlights.h"
+#include "xinsight/core/queries/c_references.h"
 #include "xinsight/core/queries/c_tags.h"
 #include "xinsight/core/queries/cpp_folds.h"
 #include "xinsight/core/queries/cpp_highlights.h"
+#include "xinsight/core/queries/cpp_references.h"
 #include "xinsight/core/queries/cpp_tags.h"
 
 extern "C" {
@@ -237,8 +239,10 @@ struct TreeSitterEngine::Impl {
     TSQuery *cppHighlightsForCpp = nullptr;
     TSQuery *cTags = nullptr;
     TSQuery *cFolds = nullptr;
+    TSQuery *cReferences = nullptr;
     TSQuery *cppTags = nullptr;
     TSQuery *cppFolds = nullptr;
+    TSQuery *cppReferences = nullptr;
 
     Impl() {
         cHighlightsForC = compileQuery(tree_sitter_c(), queries::kCHighlights, "c/highlights.scm (C)");
@@ -246,8 +250,10 @@ struct TreeSitterEngine::Impl {
         cppHighlightsForCpp = compileQuery(tree_sitter_cpp(), queries::kCppHighlights, "cpp/highlights.scm");
         cTags = compileQuery(tree_sitter_c(), queries::kCTags, "c/tags.scm");
         cFolds = compileQuery(tree_sitter_c(), queries::kCFolds, "c/folds.scm");
+        cReferences = compileQuery(tree_sitter_c(), queries::kCReferences, "c/references.scm");
         cppTags = compileQuery(tree_sitter_cpp(), queries::kCppTags, "cpp/tags.scm");
         cppFolds = compileQuery(tree_sitter_cpp(), queries::kCppFolds, "cpp/folds.scm");
+        cppReferences = compileQuery(tree_sitter_cpp(), queries::kCppReferences, "cpp/references.scm");
     }
 
     ~Impl() {
@@ -256,8 +262,10 @@ struct TreeSitterEngine::Impl {
         ts_query_delete(cppHighlightsForCpp);
         ts_query_delete(cTags);
         ts_query_delete(cFolds);
+        ts_query_delete(cReferences);
         ts_query_delete(cppTags);
         ts_query_delete(cppFolds);
+        ts_query_delete(cppReferences);
         ts_parser_delete(parser);
     }
 };
@@ -325,6 +333,32 @@ std::vector<Symbol> TreeSitterEngine::outline(const ParsedDocument &doc) const {
         symbol.startRow = start.row;
         symbol.startColumn = start.column;
         result.push_back(std::move(symbol));
+    });
+
+    return result;
+}
+
+std::vector<IdentifierOccurrence> TreeSitterEngine::references(const ParsedDocument &doc) const {
+    std::vector<IdentifierOccurrence> result;
+    if (!doc.valid()) return result;
+
+    const TSQuery *query = doc.impl_->language == Language::C ? impl_->cReferences : impl_->cppReferences;
+    TSNode root = ts_tree_root_node(doc.impl_->tree);
+
+    forEachMatch(query, root, doc.impl_->source, [&](const TSQueryMatch &match) {
+        for (uint16_t c = 0; c < match.capture_count; ++c) {
+            if (captureName(query, match.captures[c].index) != "reference") continue;
+            TSNode node = match.captures[c].node;
+
+            IdentifierOccurrence occurrence;
+            occurrence.name = std::string(nodeText(node, doc.impl_->source));
+            occurrence.startByte = ts_node_start_byte(node);
+            occurrence.endByte = ts_node_end_byte(node);
+            TSPoint start = ts_node_start_point(node);
+            occurrence.startRow = start.row;
+            occurrence.startColumn = start.column;
+            result.push_back(std::move(occurrence));
+        }
     });
 
     return result;

@@ -40,6 +40,17 @@ struct Symbol {
     uint32_t startColumn = 0; // 0-based, in bytes
 };
 
+// One occurrence of an identifier-like token (definition or use site) --
+// the raw material for the "标识符出现索引" PRD 3.2/5.3 describes for
+// find-references: fuzzy/name-based, not scope-resolved.
+struct IdentifierOccurrence {
+    std::string name;
+    uint32_t startByte = 0;
+    uint32_t endByte = 0;
+    uint32_t startRow = 0;    // 0-based
+    uint32_t startColumn = 0; // 0-based, in bytes
+};
+
 struct HighlightSpan {
     uint32_t startByte = 0;
     uint32_t endByte = 0;
@@ -106,6 +117,13 @@ public:
     // query/<lang>/tags.scm. Not persisted here -- callers build whatever
     // index they need on top (M1: per-file outline only).
     std::vector<Symbol> outline(const ParsedDocument& doc) const;
+
+    // Find-references source (PRD 3.2/5.3): every identifier-like token in
+    // the document via query/<lang>/references.scm -- definitions and uses
+    // alike, fuzzy/name-based rather than scope-resolved. Never includes
+    // text inside comments or string/char literals (those aren't lexed as
+    // identifier nodes at all).
+    std::vector<IdentifierOccurrence> references(const ParsedDocument& doc) const;
 
     std::vector<FoldRange> folds(const ParsedDocument& doc) const;
 

@@ -5,6 +5,7 @@
 
 #include "DocumentRegistry.h"
 #include "QtUiDispatcher.h"
+#include "xinsight/core/intel/CodeIntelligence.h"
 #include "xinsight/core/intel/TreeSitterEngine.h"
 #include "xinsight/core/nav/NavigationEngine.h"
 #include "xinsight/core/project/ProjectModel.h"
@@ -16,6 +17,7 @@ class OutlineView;
 class EditorView;
 class SplitManager;
 class SearchPanel;
+class QDockWidget;
 
 class MainWindow final : public QMainWindow {
     Q_OBJECT
@@ -60,12 +62,26 @@ private:
     // (PRD 5.7: theme selection is global, not per-view).
     void switchTheme(const std::string &themeName);
 
+    // F12 / Shift+F12 / Cmd+T (PRD 3.2): all three go through
+    // codeIntelligence_ only, never TreeSitterEngine/ISymbolIndex directly.
+    void jumpToDefinition();
+    void findReferencesAtCursor();
+    void promptWorkspaceSymbolSearch();
+
+    // Renders `results` into searchPanel_/searchDock_ (PRD 3.3: text
+    // search, find-references, and workspace symbol search share one
+    // dockable results panel) and shows/raises the dock.
+    void showSearchResults(const QString &statusText, std::vector<xinsight::core::search::SearchResult> results);
+
     // Declaration order matters: uiDispatcher_ must outlive/precede
-    // projectModel_/searchEngine_, which hold a reference to it.
+    // projectModel_/searchEngine_/codeIntelligence_, which hold a
+    // reference to it; codeIntelligence_ must likewise be declared (and
+    // thus destroyed) before treeSitterEngine_, whose reference it holds.
     QtUiDispatcher uiDispatcher_;
     xinsight::core::intel::TreeSitterEngine treeSitterEngine_;
     DocumentRegistry documentRegistry_;
     xinsight::core::theme::ThemeManager themeManager_;
+    xinsight::core::intel::CodeIntelligence codeIntelligence_;
     xinsight::core::project::ProjectModel projectModel_;
     xinsight::core::search::SearchEngine searchEngine_;
     xinsight::core::nav::NavigationEngine navigationEngine_;
@@ -73,6 +89,7 @@ private:
     OutlineView *outlineView_ = nullptr;
     SplitManager *splitManager_ = nullptr;
     SearchPanel *searchPanel_ = nullptr;
+    QDockWidget *searchDock_ = nullptr;
     EditorView *activeEditor_ = nullptr;
     QMetaObject::Connection activeEditorReparsedConnection_;
     QMetaObject::Connection activeEditorLabelConnection_;

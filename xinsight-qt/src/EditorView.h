@@ -6,6 +6,7 @@
 #include <vector>
 
 #include "xinsight/core/encoding/TextCodec.h"
+#include "xinsight/core/intel/CodeIntelligence.h"
 #include "xinsight/core/intel/TreeSitterEngine.h"
 #include "xinsight/core/theme/Theme.h"
 
@@ -27,12 +28,14 @@ class EditorView final : public QsciScintilla {
     Q_OBJECT
 
 public:
-    // `engine`, `registry` and `themeManager` must outlive this EditorView;
-    // all are shared across all editor views (query compilation happens
-    // once, same-file views share one document, and all views repaint from
-    // the same current theme, respectively).
+    // `engine`, `registry`, `themeManager` and `codeIntelligence` must
+    // outlive this EditorView; all are shared across all editor views
+    // (query compilation happens once, same-file views share one document,
+    // all views repaint from the same current theme, and every view's
+    // successful save feeds the same workspace symbol index, respectively).
     explicit EditorView(xinsight::core::intel::TreeSitterEngine &engine, DocumentRegistry &registry,
-                         xinsight::core::theme::ThemeManager &themeManager, QWidget *parent = nullptr);
+                         xinsight::core::theme::ThemeManager &themeManager,
+                         xinsight::core::intel::CodeIntelligence &codeIntelligence, QWidget *parent = nullptr);
     ~EditorView() override;
 
     // Re-applies themeManager's current theme to this view's chrome and
@@ -77,6 +80,11 @@ public:
     // "jumping from here" location before jumping elsewhere.
     int currentByteOffset() const;
 
+    // The identifier-like word the cursor is currently inside/adjacent to
+    // (Scintilla's own word-boundary notion), or an empty string. Source
+    // for F12/Shift+F12's "look this up" target.
+    QString wordUnderCursor() const;
+
     xinsight::core::encoding::TextEncoding encoding() const { return encoding_; }
     xinsight::core::encoding::LineEnding lineEnding() const { return lineEnding_; }
 
@@ -109,6 +117,7 @@ private:
     xinsight::core::intel::TreeSitterEngine &engine_;
     DocumentRegistry &registry_;
     xinsight::core::theme::ThemeManager &themeManager_;
+    xinsight::core::intel::CodeIntelligence &codeIntelligence_;
     std::optional<xinsight::core::intel::ParsedDocument> document_;
     std::vector<xinsight::core::intel::Symbol> outline_;
     QString filePath_; // empty iff untitled

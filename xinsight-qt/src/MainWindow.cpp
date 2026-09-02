@@ -19,8 +19,11 @@
 #include "SplitManager.h"
 #include "xinsight/core/Version.h"
 #include "xinsight/core/encoding/TextCodec.h"
+#include "xinsight/core/intel/SymbolIndex.h"
 #include "xinsight/core/project/ProjectModel.h"
 
+using xinsight::core::intel::ReferenceLocation;
+using xinsight::core::intel::SymbolLocation;
 using xinsight::core::nav::NavigationLocation;
 using xinsight::core::project::FileEntry;
 using xinsight::core::search::SearchOptions;
@@ -37,13 +40,16 @@ std::filesystem::path userConfigDir() {
 } // namespace
 
 MainWindow::MainWindow(QWidget *parent)
-    : QMainWindow(parent), themeManager_(userConfigDir()), projectModel_(uiDispatcher_), searchEngine_(uiDispatcher_) {
+    : QMainWindow(parent), themeManager_(userConfigDir()),
+      codeIntelligence_(treeSitterEngine_, std::make_shared<xinsight::core::intel::InMemorySymbolIndex>(),
+                         uiDispatcher_),
+      projectModel_(uiDispatcher_), searchEngine_(uiDispatcher_) {
     setWindowTitle(QStringLiteral("XInsight %1")
                         .arg(QString::fromUtf8(xinsight::core::version().data(),
                                                 static_cast<int>(xinsight::core::version().size()))));
     resize(1200, 800);
 
-    splitManager_ = new SplitManager(treeSitterEngine_, documentRegistry_, themeManager_, this);
+    splitManager_ = new SplitManager(treeSitterEngine_, documentRegistry_, themeManager_, codeIntelligence_, this);
     setCentralWidget(splitManager_);
 
     projectTree_ = new ProjectTreeView(this);
@@ -59,11 +65,11 @@ MainWindow::MainWindow(QWidget *parent)
     addDockWidget(Qt::RightDockWidgetArea, outlineDock);
 
     searchPanel_ = new SearchPanel(this);
-    auto *searchDock = new QDockWidget(tr("Search"), this);
-    searchDock->setWidget(searchPanel_);
-    searchDock->setFeatures(QDockWidget::DockWidgetMovable | QDockWidget::DockWidgetClosable);
-    searchDock->hide(); // stays out of the way until Cmd+Shift+F
-    addDockWidget(Qt::BottomDockWidgetArea, searchDock);
+    searchDock_ = new QDockWidget(tr("Search"), this);
+    searchDock_->setWidget(searchPanel_);
+    searchDock_->setFeatures(QDockWidget::DockWidgetMovable | QDockWidget::DockWidgetClosable);
+    searchDock_->hide(); // stays out of the way until Cmd+Shift+F
+    addDockWidget(Qt::BottomDockWidgetArea, searchDock_);
 
     auto *fileMenu = menuBar()->addMenu(tr("&File"));
 
@@ -74,7 +80,7 @@ MainWindow::MainWindow(QWidget *parent)
     // gets reopened -- without it there's no way back in once closed.
     viewMenu->addAction(projectDock->toggleViewAction());
     viewMenu->addAction(outlineDock->toggleViewAction());
-    viewMenu->addAction(searchDock->toggleViewAction());
+    viewMenu->addAction(searchDock_->toggleViewAction());
 
     auto *openProjectAction = fileMenu->addAction(tr("&Open Project..."));
     openProjectAction->setShortcut(QKeySequence(QStringLiteral("Ctrl+O")));
@@ -146,11 +152,31 @@ MainWindow::MainWindow(QWidget *parent)
     auto *searchMenu = menuBar()->addMenu(tr("&Search"));
     auto *findInFilesAction = searchMenu->addAction(tr("Find in Files..."));
     findInFilesAction->setShortcut(QKeySequence(QStringLiteral("Ctrl+Shift+F")));
-    connect(findInFilesAction, &QAction::triggered, this, [searchDock, this]() {
-        searchDock->show();
-        searchDock->raise();
+    connect(findInFilesAction, &QAction::triggered, this, [this]() {
+        searchDock_->show();
+        searchDock_->raise();
         searchPanel_->focusQuery();
     });
+
+    searchMenu->addSeparator();
+
+    auto *gotoDefAction = searchMenu->addAction(tr("Go to Definition"));
+    gotoDefAction->setShortcut(QKeySequence(QStringLiteral("F12")));
+    connect(gotoDefAction, &QAction::triggered, this, &MainWindow::jumpToDefinition);
+
+    auto *findRefsAction = searchMenu->addAction(tr("Find References"));
+    findRefsAction->setShortcut(QKeySequence(QStringLiteral("Shift+F12")));
+    connect(findRefsAction, &QAction::triggered, this, &MainWindow::findReferencesAtCursor);
+
+    auto *workspaceSymbolAction = searchMenu->addAction(tr("Go to Symbol in Workspace..."));
+    workspaceSymbolAction->setShortcut(QKeySequence(QStringLiteral("Ctrl+T")));
+    // QsciScintilla's own key handling swallows plain Ctrl/Cmd+letter
+    // combinations before they'd otherwise bubble up to a WindowShortcut
+    // (the default context) when the editor has focus -- ApplicationShortcut
+    // makes Qt's shortcut dispatch check this action first, regardless of
+    // which child widget is focused.
+    workspaceSymbolAction->setShortcutContext(Qt::ApplicationShortcut);
+    connect(workspaceSymbolAction, &QAction::triggered, this, &MainWindow::promptWorkspaceSymbolSearch);
 
     connect(searchPanel_, &SearchPanel::searchRequested, this, [this](const QString &query, SearchOptions options) {
         if (projectModel_.rootPath().empty()) {
@@ -167,7 +193,31 @@ MainWindow::MainWindow(QWidget *parent)
     searchEngine_.setOnComplete(
         [this](size_t total, bool cancelled) { searchPanel_->searchFinished(total, cancelled); });
 
-    projectModel_.setOnScanComplete([this](std::vector<FileEntry> entries) { projectTree_->populate(entries); });
+    // No timeout on either message: both persist until replaced, matching
+    // the rest of this file's "no transient showMessage() over a
+    // persistent status line" convention -- updateStatusForActiveEditor()
+    // on completion restores whatever the persistent line should say.
+    codeIntelligence_.setOnIndexProgress([this](size_t done, size_t total) {
+        statusBar()->showMessage(tr("Indexing symbols... %1/%2").arg(done).arg(total));
+    });
+    codeIntelligence_.setOnIndexComplete([this]() { updateStatusForActiveEditor(); });
+
+    projectModel_.setOnScanComplete([this](std::vector<FileEntry> entries) {
+        projectTree_->populate(entries);
+
+        // PRD 5.3: build the workspace symbol index in the background as
+        // soon as the file list is known -- entries are FileEntry's
+        // (relative path + isDirectory + exceedsSizeLimit), so resolve to
+        // absolute paths and drop anything CodeIntelligence shouldn't try
+        // to parse (directories, oversized files; unrecognized extensions
+        // are filtered by CodeIntelligence itself).
+        std::vector<std::filesystem::path> files;
+        for (const FileEntry &entry : entries) {
+            if (entry.isDirectory || entry.exceedsSizeLimit) continue;
+            files.push_back(projectModel_.rootPath() / entry.relativePath);
+        }
+        codeIntelligence_.indexProject(std::move(files));
+    });
 
     connect(projectTree_, &ProjectTreeView::fileActivated, this, [this](const QString &relativePath) {
         QString absolutePath = QString::fromStdString(projectModel_.rootPath().string()) + QLatin1Char('/') +
@@ -275,6 +325,132 @@ void MainWindow::updateStatusForActiveEditor() {
 void MainWindow::switchTheme(const std::string &themeName) {
     if (!themeManager_.setCurrentTheme(themeName)) return;
     for (EditorView *editor : splitManager_->allEditors()) editor->applyTheme();
+}
+
+namespace {
+
+QString symbolKindLabel(xinsight::core::intel::SymbolKind kind) {
+    using xinsight::core::intel::SymbolKind;
+    switch (kind) {
+    case SymbolKind::Function:
+        return QStringLiteral("function");
+    case SymbolKind::Method:
+        return QStringLiteral("method");
+    case SymbolKind::Class:
+        return QStringLiteral("class");
+    case SymbolKind::Struct:
+        return QStringLiteral("struct");
+    case SymbolKind::Enum:
+        return QStringLiteral("enum");
+    case SymbolKind::Union:
+        return QStringLiteral("union");
+    case SymbolKind::Namespace:
+        return QStringLiteral("namespace");
+    case SymbolKind::Typedef:
+        return QStringLiteral("typedef");
+    case SymbolKind::Macro:
+        return QStringLiteral("macro");
+    case SymbolKind::GlobalVariable:
+        return QStringLiteral("variable");
+    }
+    return QString();
+}
+
+// Converts a symbol/reference index hit into the same SearchResult shape
+// ripgrep results use (PRD 3.3's unified panel model), so SearchPanel's
+// existing grouping/jump rendering can be reused verbatim for
+// definitions/references/workspace-symbol results too -- a single
+// SubMatch carrying the name's own byte range doubles as the jump column,
+// since there's no ripgrep-style surrounding line text to highlight within.
+SearchResult toSearchResult(const SymbolLocation &loc) {
+    SearchResult result;
+    result.path = loc.file;
+    result.line = loc.startRow + 1;
+    result.preview = loc.name + " (" + symbolKindLabel(loc.kind).toStdString() + ")";
+    result.submatches.push_back({loc.startColumn, loc.startColumn + static_cast<uint32_t>(loc.name.size())});
+    return result;
+}
+
+SearchResult toSearchResult(const ReferenceLocation &loc) {
+    SearchResult result;
+    result.path = loc.file;
+    result.line = loc.startRow + 1;
+    result.preview = loc.name;
+    result.submatches.push_back({loc.startColumn, loc.startColumn + static_cast<uint32_t>(loc.name.size())});
+    return result;
+}
+
+} // namespace
+
+void MainWindow::showSearchResults(const QString &statusText, std::vector<SearchResult> results) {
+    searchDock_->show();
+    searchDock_->raise();
+    searchPanel_->clearResults();
+    searchPanel_->appendResults(results);
+    searchPanel_->searchFinished(results.size(), false);
+    statusBar()->showMessage(statusText, 5000);
+}
+
+void MainWindow::jumpToDefinition() {
+    if (activeEditor_ == nullptr) return;
+    QString word = activeEditor_->wordUnderCursor();
+    if (word.isEmpty()) return;
+
+    auto defs = codeIntelligence_.findDefinition(word.toStdString());
+    if (defs.empty()) {
+        statusBar()->showMessage(tr("No definition found for '%1'").arg(word), 5000);
+        return;
+    }
+    if (defs.size() == 1) {
+        jumpTo(QString::fromStdString(defs[0].file), static_cast<int>(defs[0].startRow) + 1,
+               static_cast<int>(defs[0].startColumn));
+        return;
+    }
+
+    std::vector<SearchResult> results;
+    results.reserve(defs.size());
+    for (const auto &def : defs) results.push_back(toSearchResult(def));
+    showSearchResults(tr("%1 definitions of '%2'").arg(defs.size()).arg(word), std::move(results));
+}
+
+void MainWindow::findReferencesAtCursor() {
+    if (activeEditor_ == nullptr) return;
+    QString word = activeEditor_->wordUnderCursor();
+    if (word.isEmpty()) return;
+
+    auto refs = codeIntelligence_.findReferences(word.toStdString());
+    if (refs.empty()) {
+        statusBar()->showMessage(tr("No references found for '%1'").arg(word), 5000);
+        return;
+    }
+
+    std::vector<SearchResult> results;
+    results.reserve(refs.size());
+    for (const auto &ref : refs) results.push_back(toSearchResult(ref));
+    showSearchResults(tr("%1 references to '%2'").arg(refs.size()).arg(word), std::move(results));
+}
+
+void MainWindow::promptWorkspaceSymbolSearch() {
+    // v1 simplification (documented, not a live-filtering quick-open
+    // palette): a single blocking prompt, same QInputDialog pattern
+    // already used for New File/New Folder. Results still land in the
+    // shared search panel (PRD 3.3's actual requirement), just entered via
+    // a plain dialog rather than a dedicated command-palette widget.
+    bool ok = false;
+    QString query = QInputDialog::getText(this, tr("Go to Symbol in Workspace"), tr("Symbol name:"),
+                                           QLineEdit::Normal, QString(), &ok);
+    if (!ok || query.isEmpty()) return;
+
+    auto results = codeIntelligence_.searchWorkspaceSymbols(query.toStdString());
+    if (results.empty()) {
+        statusBar()->showMessage(tr("No symbols matching '%1'").arg(query), 5000);
+        return;
+    }
+
+    std::vector<SearchResult> converted;
+    converted.reserve(results.size());
+    for (const auto &loc : results) converted.push_back(toSearchResult(loc));
+    showSearchResults(tr("%1 symbols matching '%2'").arg(results.size()).arg(query), std::move(converted));
 }
 
 void MainWindow::jumpTo(const QString &absolutePath, int line, int column) {

@@ -9,8 +9,10 @@
 using xinsight::core::intel::TreeSitterEngine;
 
 EditorPane::EditorPane(TreeSitterEngine &engine, DocumentRegistry &registry,
-                        xinsight::core::theme::ThemeManager &themeManager, QWidget *parent)
-    : QTabWidget(parent), engine_(engine), registry_(registry), themeManager_(themeManager) {
+                        xinsight::core::theme::ThemeManager &themeManager,
+                        xinsight::core::intel::CodeIntelligence &codeIntelligence, QWidget *parent)
+    : QTabWidget(parent), engine_(engine), registry_(registry), themeManager_(themeManager),
+      codeIntelligence_(codeIntelligence) {
     setTabsClosable(true);
     setMovable(true);
     setDocumentMode(true);
@@ -59,7 +61,7 @@ EditorView *EditorPane::openFile(const QString &absolutePath) {
         }
     }
 
-    auto *view = new EditorView(engine_, registry_, themeManager_, this);
+    auto *view = new EditorView(engine_, registry_, themeManager_, codeIntelligence_, this);
     if (!view->openFile(absolutePath)) {
         delete view;
         return nullptr;
@@ -70,7 +72,7 @@ EditorView *EditorPane::openFile(const QString &absolutePath) {
 }
 
 EditorView *EditorPane::newUntitledTab() {
-    auto *view = new EditorView(engine_, registry_, themeManager_, this);
+    auto *view = new EditorView(engine_, registry_, themeManager_, codeIntelligence_, this);
     view->newUntitled();
     addEditorTab(view, view->displayName());
     return view;

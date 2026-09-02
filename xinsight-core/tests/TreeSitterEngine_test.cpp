@@ -20,6 +20,10 @@ bool hasHighlight(const std::vector<HighlightSpan> &spans, std::string_view capt
     return std::any_of(spans.begin(), spans.end(), [&](const HighlightSpan &s) { return s.capture == capture; });
 }
 
+size_t countReferences(const std::vector<IdentifierOccurrence> &refs, std::string_view name) {
+    return std::count_if(refs.begin(), refs.end(), [&](const IdentifierOccurrence &r) { return r.name == name; });
+}
+
 } // namespace
 
 TEST_CASE("languageForExtension follows PRD 5.6's C/C++ extension set") {
@@ -270,4 +274,61 @@ TEST_CASE("C: incremental edit shifts subsequent symbol positions correctly") {
     auto fooAfter = std::find_if(after.begin(), after.end(), [](const Symbol &s) { return s.name == "foo"; });
     CHECK(fooAfter->startRow == 1);
     CHECK(std::string(newSource.substr(fooAfter->startByte, 3)) == "foo");
+}
+
+TEST_CASE("C: references counts definition + call sites, excludes comment and string text") {
+    TreeSitterEngine engine;
+    std::string source = R"(
+int compute_widget(int value) {
+    // compute_widget wraps the core computation logic ("compute_widget" mentioned twice here)
+    return value * 2;
+}
+
+int main(void) {
+    const char *label = "compute_widget";
+    int result = compute_widget(5);
+    result = compute_widget(result);
+    return result;
+}
+)";
+
+    ParsedDocument doc = engine.parse(Language::C, source);
+    REQUIRE(doc.valid());
+
+    auto refs = engine.references(doc);
+    // 1 definition + 2 call sites = 3 -- the two mentions in the comment and
+    // the one inside the string literal must NOT be counted (a naive
+    // substring search over `source` would find 6).
+    CHECK(countReferences(refs, "compute_widget") == 3);
+
+    // Every returned occurrence's byte range must actually spell the name
+    // it claims (sanity check on offset bookkeeping).
+    for (const auto &ref : refs) {
+        if (ref.name != "compute_widget") continue;
+        CHECK(source.substr(ref.startByte, ref.endByte - ref.startByte) == "compute_widget");
+    }
+}
+
+TEST_CASE("Cpp: references includes type_identifier and field_identifier occurrences") {
+    TreeSitterEngine engine;
+    std::string source = R"(
+struct Widget {
+    int value;
+};
+
+Widget make_widget(int v) {
+    Widget w;
+    w.value = v;
+    return w;
+}
+)";
+
+    ParsedDocument doc = engine.parse(Language::Cpp, source);
+    REQUIRE(doc.valid());
+
+    auto refs = engine.references(doc);
+    // "Widget": struct definition + return type + local variable type.
+    CHECK(countReferences(refs, "Widget") == 3);
+    // "value": field declaration + `w.value` member access.
+    CHECK(countReferences(refs, "value") == 2);
 }

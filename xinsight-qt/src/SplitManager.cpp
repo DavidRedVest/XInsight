@@ -10,8 +10,10 @@
 using xinsight::core::intel::TreeSitterEngine;
 
 SplitManager::SplitManager(TreeSitterEngine &engine, DocumentRegistry &registry,
-                            xinsight::core::theme::ThemeManager &themeManager, QWidget *parent)
-    : QWidget(parent), engine_(engine), registry_(registry), themeManager_(themeManager) {
+                            xinsight::core::theme::ThemeManager &themeManager,
+                            xinsight::core::intel::CodeIntelligence &codeIntelligence, QWidget *parent)
+    : QWidget(parent), engine_(engine), registry_(registry), themeManager_(themeManager),
+      codeIntelligence_(codeIntelligence) {
     layout_ = new QVBoxLayout(this);
     layout_->setContentsMargins(0, 0, 0, 0);
 
@@ -24,7 +26,7 @@ SplitManager::SplitManager(TreeSitterEngine &engine, DocumentRegistry &registry,
 }
 
 EditorPane *SplitManager::createPane() {
-    auto *pane = new EditorPane(engine_, registry_, themeManager_, this);
+    auto *pane = new EditorPane(engine_, registry_, themeManager_, codeIntelligence_, this);
     connect(pane, &EditorPane::currentEditorChanged, this, [this, pane](EditorView *editor) {
         if (pane == activePane_) emit activeEditorChanged(editor);
     });

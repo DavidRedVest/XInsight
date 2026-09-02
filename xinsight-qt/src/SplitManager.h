@@ -3,6 +3,7 @@
 #include <QWidget>
 #include <vector>
 
+#include "xinsight/core/intel/CodeIntelligence.h"
 #include "xinsight/core/intel/TreeSitterEngine.h"
 #include "xinsight/core/theme/Theme.h"
 
@@ -25,7 +26,8 @@ class SplitManager final : public QWidget {
 
 public:
     explicit SplitManager(xinsight::core::intel::TreeSitterEngine &engine, DocumentRegistry &registry,
-                           xinsight::core::theme::ThemeManager &themeManager, QWidget *parent = nullptr);
+                           xinsight::core::theme::ThemeManager &themeManager,
+                           xinsight::core::intel::CodeIntelligence &codeIntelligence, QWidget *parent = nullptr);
 
     // May be null if the active pane has no tabs open.
     EditorView *activeEditor() const;
@@ -59,6 +61,7 @@ private:
     xinsight::core::intel::TreeSitterEngine &engine_;
     DocumentRegistry &registry_;
     xinsight::core::theme::ThemeManager &themeManager_;
+    xinsight::core::intel::CodeIntelligence &codeIntelligence_;
     QVBoxLayout *layout_ = nullptr;
     QWidget *root_ = nullptr;
     EditorPane *activePane_ = nullptr;
