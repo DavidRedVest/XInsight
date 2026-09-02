@@ -1,0 +1,27 @@
+{
+  "version": 6,
+  "cmakeMinimumRequired": { "major": 3, "minor": 21, "patch": 0 },
+  "configurePresets": [
+    {
+      "name": "default",
+      "displayName": "macOS (official Qt 6.8.3 install)",
+      "binaryDir": "${sourceDir}/build/${presetName}",
+      "cacheVariables": {
+        "CMAKE_PREFIX_PATH": "/Users/liszt/Qt/6.8.3/macos",
+        "CMAKE_EXPORT_COMPILE_COMMANDS": "ON"
+      }
+    },
+    {
+      "name": "core-only",
+      "displayName": "xinsight-core only, no Qt required",
+      "inherits": "default",
+      "cacheVariables": {
+        "XINSIGHT_BUILD_QT": "OFF"
+      }
+    }
+  ],
+  "buildPresets": [
+    { "name": "default", "configurePreset": "default" },
+    { "name": "core-only", "configurePreset": "core-only" }
+  ]
+}
