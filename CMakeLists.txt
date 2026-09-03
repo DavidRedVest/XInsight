@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.21)
 
 project(XInsight
-        VERSION 0.1.0
+        VERSION 0.4.0
         DESCRIPTION "Source Insight-style C/C++ code reader + lightweight editor for macOS"
         LANGUAGES C CXX)
 
