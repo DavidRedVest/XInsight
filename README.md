@@ -62,10 +62,10 @@ cmake --preset core-only
 cmake --build build/core-only -j
 ```
 
-运行 GUI（目前是普通可执行文件，尚未打包成签名的 `.app`，见下方"当前进度"）：
+运行 GUI（`.app` bundle，尚未签名/公证，见下方"当前进度"）：
 
 ```bash
-./build/default/xinsight-qt/xinsight-qt
+open build/default/xinsight-qt/xinsight-qt.app
 ```
 
 ## 测试
@@ -84,7 +84,8 @@ ctest --test-dir build/default
 - [x] **M2**：符号索引（`InMemorySymbolIndex`）、跳转定义/查引用/工作区符号搜索
 - [x] **M3**：`ContextEngine` 光标跟随上下文侧栏（含变量→类型解码、候选排序、下钻）
 - [x] **M4**（大部分完成）：`LspClient` + `ClangdProvider` clangd 精确层、`CodeIntelligence` 按 §5.2 路由（自动探测 `compile_commands.json`，找到就升级为 precise、找不到零配置回退不回归）、`ClangdStatusView` 状态面板、F12/Shift+F12/Cmd+T 及 Cmd+点击跳转的 precise/fast 标记。**未完成**：会话恢复、面包屑
-- [ ] 打包/签名/公证（PRD 明确推迟到 v1 收尾或 v2）
+- [x] 打包成 `.app` bundle（`MACOSX_BUNDLE`，双击/Dock 启动不再弹出 Terminal 控制台）
+- [ ] 签名/公证（PRD 明确推迟到 v1 收尾或 v2）
 
 里程碑定义详见 PRD 第 7 节。
 

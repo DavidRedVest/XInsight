@@ -102,10 +102,13 @@ public:
     CursorLocation currentCursorLocation() const;
 
     // Resolves the identifier under the current cursor (variable->type
-    // decode included, PRD 2.1) and notifies contextEngine_ -- called on
-    // every cursor move, and by MainWindow when this view becomes the
+    // decode included, PRD 2.1) and notifies contextEngine_. Called after a
+    // deliberate cursor move -- a plain mouse click or a jump via
+    // gotoByteOffset() -- and by MainWindow when this view becomes the
     // active editor (switching panes/tabs doesn't itself move the cursor,
     // but the ambient pane still needs to reflect wherever it already is).
+    // Deliberately *not* called on every keystroke/arrow-key cursor move --
+    // see the constructor's comment.
     void updateContextForCursor();
 
     xinsight::core::encoding::TextEncoding encoding() const { return encoding_; }
@@ -132,7 +135,6 @@ signals:
 private slots:
     void onTextChanged();
     void onExternalFileChanged(const QString &path);
-    void onCursorPositionChanged(int line, int index);
 
 protected:
     void mousePressEvent(QMouseEvent *event) override;

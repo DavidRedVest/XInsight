@@ -8,6 +8,8 @@
 #include <QMessageBox>
 #include <QMouseEvent>
 #include <QPushButton>
+#include <Qsci/qscicommand.h>
+#include <Qsci/qscicommandset.h>
 #include <Scintilla.h>
 #include <SciLexer.h>
 #include <algorithm>
@@ -34,19 +36,37 @@ EditorView::EditorView(TreeSitterEngine &engine, DocumentRegistry &registry, the
     setFolding(QsciScintilla::BoxedTreeFoldStyle);
     setUtf8(true);
 
-    // Scintilla's default key map binds Ctrl+T (which QScintilla maps
-    // Cmd+T to on macOS) to SCI_LINETRANSPOSE ("swap current line with
-    // previous"), silently swapping two lines instead of letting
-    // MainWindow's "Go to Symbol in Workspace" QAction shortcut fire.
-    // Freeing it here is a one-time keymap fix, not a per-theme style
-    // concern, so it lives in the constructor rather than initStyles().
+    // Scintilla's default key map binds Ctrl+T (Cmd+T on macOS) to
+    // SCI_LINETRANSPOSE and Ctrl+[/Ctrl+] to SCI_PARAUP/SCI_PARADOWN,
+    // silently eating MainWindow's "Go to Symbol in Workspace" and Go
+    // Back/Go Forward QAction shortcuts instead. Clearing them via
+    // SCI_CLEARCMDKEY (raw Scintilla's own keymap) is necessary but *not*
+    // sufficient: QsciScintilla::event() intercepts QEvent::ShortcutOverride
+    // itself and separately consults its own QsciCommandSet -- a second,
+    // independent table with its own default bindings for the exact same
+    // keys -- accepting the override (and so starving every QAction
+    // shortcut, regardless of Qt::ApplicationShortcut context) whenever
+    // *that* table still has a match. Both layers have to be cleared.
     SendScintilla(SCI_CLEARCMDKEY, static_cast<unsigned long>('T' | (SCMOD_CTRL << 16)));
+    SendScintilla(SCI_CLEARCMDKEY, static_cast<unsigned long>('[' | (SCMOD_CTRL << 16)));
+    SendScintilla(SCI_CLEARCMDKEY, static_cast<unsigned long>(']' | (SCMOD_CTRL << 16)));
+
+    for (QsciCommand::Command cmd : {QsciCommand::LineTranspose, QsciCommand::ParaUp, QsciCommand::ParaDown}) {
+        if (QsciCommand *command = standardCommands()->find(cmd)) command->setKey(0);
+    }
 
     initStyles();
 
     connect(this, &QsciScintilla::textChanged, this, &EditorView::onTextChanged);
     connect(this, &QsciScintilla::modificationChanged, this, [this](bool) { emit tabLabelChanged(); });
-    connect(this, &QsciScintilla::cursorPositionChanged, this, &EditorView::onCursorPositionChanged);
+    // Deliberately not wired to QsciScintilla::cursorPositionChanged: that
+    // signal fires for every caret move, including ones from typing and
+    // arrow-key navigation, which made the context pane re-resolve (and lag)
+    // on every keystroke. updateContextForCursor() is instead called
+    // explicitly from the handful of places a cursor move actually reflects
+    // deliberate navigation: a plain mouse click (mousePressEvent below) and
+    // gotoByteOffset() (F12/outline/search-result/Cmd+click jumps, Go
+    // Back/Forward).
 }
 
 EditorView::~EditorView() {
@@ -344,6 +364,7 @@ void EditorView::applyOutline() {
 void EditorView::gotoByteOffset(int byteOffset) {
     SendScintilla(SCI_GOTOPOS, static_cast<unsigned long>(byteOffset), 0L);
     setFocus();
+    updateContextForCursor();
 }
 
 void EditorView::gotoLineAndColumn(int line1Based, int byteColumn) {
@@ -392,6 +413,13 @@ void EditorView::mousePressEvent(QMouseEvent *event) {
         }
     }
     QsciScintilla::mousePressEvent(event);
+
+    // Plain click (no modifier): base class has already placed the caret
+    // at the clicked position, so resolve the context pane for wherever
+    // the user just clicked -- the only trigger for context updates now
+    // (see the constructor's comment on why cursorPositionChanged isn't
+    // wired up directly).
+    if (event->button() == Qt::LeftButton) updateContextForCursor();
 }
 
 void EditorView::mouseMoveEvent(QMouseEvent *event) {
@@ -408,8 +436,6 @@ void EditorView::mouseMoveEvent(QMouseEvent *event) {
         viewport()->unsetCursor();
     }
 }
-
-void EditorView::onCursorPositionChanged(int /*line*/, int /*index*/) { updateContextForCursor(); }
 
 void EditorView::updateContextForCursor() {
     if (!document_) {

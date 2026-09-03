@@ -44,7 +44,7 @@ Per PRD §10: CMake, C++20, top-level split into `xinsight-core` (no Qt) and `xi
 cmake --preset default && cmake --build build/default -j      # core + Qt GUI
 cmake --preset core-only && cmake --build build/core-only -j  # core only, no Qt required
 ./build/default/xinsight-core/tests/xinsight-core-tests        # headless doctest suite
-./build/default/xinsight-qt/xinsight-qt                        # run the GUI (plain executable, not yet an app bundle)
+open build/default/xinsight-qt/xinsight-qt.app                 # run the GUI (MACOSX_BUNDLE; unsigned/un-notarized)
 ```
 
 `default`'s `CMAKE_PREFIX_PATH` in `CMakePresets.json` points at a local Qt 6 install — adjust it if Qt lives elsewhere on your machine.

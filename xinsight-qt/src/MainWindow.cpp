@@ -149,10 +149,15 @@ MainWindow::MainWindow(QWidget *parent)
 
     auto *goBackAction = windowMenu->addAction(tr("Go Back"));
     goBackAction->setShortcut(QKeySequence(QStringLiteral("Ctrl+[")));
+    // Same QsciScintilla-swallows-Ctrl-combos issue as Cmd+T below --
+    // ApplicationShortcut makes Qt's shortcut dispatch check this action
+    // first regardless of which child widget (i.e. the editor) has focus.
+    goBackAction->setShortcutContext(Qt::ApplicationShortcut);
     connect(goBackAction, &QAction::triggered, this, &MainWindow::goBack);
 
     auto *goForwardAction = windowMenu->addAction(tr("Go Forward"));
     goForwardAction->setShortcut(QKeySequence(QStringLiteral("Ctrl+]")));
+    goForwardAction->setShortcutContext(Qt::ApplicationShortcut);
     connect(goForwardAction, &QAction::triggered, this, &MainWindow::goForward);
 
     auto *themeMenu = menuBar()->addMenu(tr("&Theme"));
