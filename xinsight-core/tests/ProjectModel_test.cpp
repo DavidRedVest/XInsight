@@ -222,3 +222,39 @@ TEST_CASE("createDirectory refuses to clobber an existing path") {
     CHECK_FALSE(createDirectory(dir.root() / "existing"));
     CHECK(fs::exists(dir.root() / "existing" / "marker.c")); // untouched
 }
+
+TEST_CASE("findCompileCommandsDir: finds one directly at the project root") {
+    TempProjectDir dir;
+    dir.writeFile("compile_commands.json", "[]");
+
+    auto found = findCompileCommandsDir(dir.root());
+    REQUIRE(found.has_value());
+    CHECK(fs::equivalent(*found, dir.root()));
+}
+
+TEST_CASE("findCompileCommandsDir: finds one inside a conventional build directory") {
+    TempProjectDir dir;
+    dir.writeFile("build/compile_commands.json", "[]");
+
+    auto found = findCompileCommandsDir(dir.root());
+    REQUIRE(found.has_value());
+    CHECK(fs::equivalent(*found, dir.root() / "build"));
+}
+
+TEST_CASE("findCompileCommandsDir: root itself takes priority over a build directory") {
+    TempProjectDir dir;
+    dir.writeFile("compile_commands.json", "[]");
+    dir.writeFile("build/compile_commands.json", "[]");
+
+    auto found = findCompileCommandsDir(dir.root());
+    REQUIRE(found.has_value());
+    CHECK(fs::equivalent(*found, dir.root()));
+}
+
+TEST_CASE("findCompileCommandsDir: returns nullopt when none exists anywhere conventional") {
+    TempProjectDir dir;
+    dir.writeFile("main.c", "int main(void) { return 0; }\n");
+    dir.writeFile("some_other_dir/compile_commands.json", "[]"); // not a conventional name
+
+    CHECK_FALSE(findCompileCommandsDir(dir.root()).has_value());
+}

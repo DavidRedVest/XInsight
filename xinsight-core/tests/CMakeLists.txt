@@ -10,6 +10,8 @@ add_executable(xinsight-core-tests
   SymbolIndex_test.cpp
   CodeIntelligence_test.cpp
   ContextEngine_test.cpp
+  LspClient_test.cpp
+  ClangdProvider_test.cpp
 )
 
 target_link_libraries(xinsight-core-tests PRIVATE

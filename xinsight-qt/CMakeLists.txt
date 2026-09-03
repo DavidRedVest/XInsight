@@ -3,9 +3,10 @@
 # directly. All of that goes through xinsight-core's single exit points
 # (CodeIntelligence / SearchEngine / NavigationEngine / LspClient).
 
-find_package(Qt6 REQUIRED COMPONENTS Widgets PrintSupport)
+find_package(Qt6 REQUIRED COMPONENTS Widgets PrintSupport Svg)
 
 qt_standard_project_setup()
+set(CMAKE_AUTORCC ON)
 
 add_subdirectory(third_party/qscintilla)
 
@@ -22,6 +23,8 @@ add_executable(xinsight-qt
   src/DocumentRegistry.cpp
   src/SearchPanel.cpp
   src/ContextPaneView.cpp
+  src/ClangdStatusView.cpp
+  resources/resources.qrc
 )
 
 target_include_directories(xinsight-qt PRIVATE src)
@@ -29,5 +32,6 @@ target_include_directories(xinsight-qt PRIVATE src)
 target_link_libraries(xinsight-qt PRIVATE
   xinsight-core
   Qt6::Widgets
+  Qt6::Svg
   qscintilla2-xinsight
 )

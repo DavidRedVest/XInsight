@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Repository state
 
-This repository currently contains only the product spec (`XInsight_PRD_v4.md`, in Chinese) and a logo asset (`code.svg`). No source code, build files, or tooling exist yet — implementation has not started. Read the PRD in full before writing any code; it is the single source of truth for scope, architecture, and acceptance criteria, and section 10 ("给 Claude Code 的实现约定") is written specifically as build/architecture instructions for this file.
+M1–M4 are implemented (see PRD §7 for milestone definitions; status below). `xinsight-core` and `xinsight-qt` both build and their test suite passes; the two CMake presets in `CMakePresets.json` (`default`, `core-only`) are the way to build/verify the core/GUI decoupling rule. Two things from the original M4 scope are still outstanding: session restore and breadcrumbs (see the Milestone order section below) — pick those up before considering M4 fully closed. Read the PRD in full before making architectural changes; it remains the single source of truth for scope, architecture, and acceptance criteria, and section 10 ("给 Claude Code 的实现约定") is written specifically as build/architecture instructions for this file.
 
 ## What XInsight is
 
@@ -36,11 +36,20 @@ Dependency direction is strictly one-way downward: GUI → adapter → core. Cor
 - No SQLite symbol-index backend in v1 (interface abstraction is required now; the second implementation is not).
 - No Git integration beyond external-change detection + reload prompt.
 
-## Build (once code exists)
+## Build
 
 Per PRD §10: CMake, C++20, top-level split into `xinsight-core` (no Qt) and `xinsight-qt` (GUI) targets, with `CMAKE_EXPORT_COMPILE_COMMANDS=ON`. CI/local builds must be able to build and test `xinsight-core` in isolation without linking Qt — this is the primary way to catch an architectural violation (a stray Qt include in core).
 
-Core deps: `tree-sitter` + `tree-sitter-c` + `tree-sitter-cpp`, `nlohmann/json`, `reproc` (subprocess management for spawning clangd/ripgrep). GUI deps: Qt 6 + QScintilla. External tools invoked as subprocesses: `ripgrep`, optional `clangd`.
+```bash
+cmake --preset default && cmake --build build/default -j      # core + Qt GUI
+cmake --preset core-only && cmake --build build/core-only -j  # core only, no Qt required
+./build/default/xinsight-core/tests/xinsight-core-tests        # headless doctest suite
+./build/default/xinsight-qt/xinsight-qt                        # run the GUI (plain executable, not yet an app bundle)
+```
+
+`default`'s `CMAKE_PREFIX_PATH` in `CMakePresets.json` points at a local Qt 6 install — adjust it if Qt lives elsewhere on your machine.
+
+Core deps (all vendored via `FetchContent`, see `THIRD_PARTY_LICENSES`): `tree-sitter` + `tree-sitter-c` + `tree-sitter-cpp`, `nlohmann/json`, `reproc` (subprocess management for spawning clangd/ripgrep), `doctest`. GUI deps: Qt 6 (Widgets + PrintSupport + Svg) + QScintilla (vendored source, GPLv3 — see `THIRD_PARTY_LICENSES` before any public distribution). External tools invoked as subprocesses: `ripgrep`, optional `clangd`.
 
 ## Test priorities (PRD §10)
 
@@ -50,10 +59,10 @@ When implementation begins, the highest-leverage tests are: tree-sitter query sy
 
 Build in this order — each milestone must be runnable and self-testable before starting the next, and clangd is deliberately last so the zero-config core is de-risked first:
 
-1. **M1**: core skeleton, `IUiDispatcher`, tree-sitter highlight/fold/outline, ripgrep text search, `ProjectModel` file-inclusion rules, basic editing loop (edit/save/dirty/undo/new/save-as/external-reload), multi-encoding read/write. No symbol index or index-linked editing yet.
-2. **M2**: `ISymbolIndex` + `InMemorySymbolIndex`, background indexing with progress, jump-to-definition/references/workspace-symbol search off the index, edit→incremental-reparse→index-update loop.
-3. **M3**: `ContextEngine` — the cursor-following context pane, tree-sitter-driven, with candidate ranking and drill-down.
-4. **M4**: `LspClient` + `ClangdProvider`, `CodeIntelligence` routing per §5.2, precise/fast mode indicator, session restore, themes, breadcrumbs.
+1. **M1** (done): core skeleton, `IUiDispatcher`, tree-sitter highlight/fold/outline, ripgrep text search, `ProjectModel` file-inclusion rules, basic editing loop (edit/save/dirty/undo/new/save-as/external-reload), multi-encoding read/write, loadable theme structure (Dark/Light/Eye-care built in). No symbol index or index-linked editing yet.
+2. **M2** (done): `ISymbolIndex` + `InMemorySymbolIndex`, background indexing with progress, jump-to-definition/references/workspace-symbol search off the index, edit→incremental-reparse→index-update loop.
+3. **M3** (done): `ContextEngine` — the cursor-following context pane, tree-sitter-driven, with candidate ranking and drill-down.
+4. **M4** (mostly done): `LspClient` + `ClangdProvider`, `CodeIntelligence` routing per §5.2, precise/fast mode indicator (in the search/results panel and the `ClangdStatusView` diagnostic dock), Cmd+click-to-jump. **Not yet done**: session restore, breadcrumbs — pick these up next if resuming M4.
 
 ## Model routing guidance (from PRD §10, author's stated preference)
 

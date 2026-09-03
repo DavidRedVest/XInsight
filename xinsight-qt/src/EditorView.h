@@ -13,6 +13,7 @@
 
 class DocumentRegistry;
 class QFileSystemWatcher;
+class QMouseEvent;
 
 // A single tree-sitter-backed editor view. Wraps QsciScintilla and drives
 // its styling/folding directly from xinsight-core's TreeSitterEngine
@@ -89,6 +90,17 @@ public:
     // for F12/Shift+F12's "look this up" target.
     QString wordUnderCursor() const;
 
+    // 0-based row, byte column within that row, and that row's full text
+    // (line-ending stripped) for the current cursor position -- the shape
+    // CodeIntelligence's async findDefinition/findReferences need for the
+    // clangd path's UTF-16 position conversion (PRD 5.2).
+    struct CursorLocation {
+        int row = 0;
+        int byteColumn = 0;
+        QString lineText;
+    };
+    CursorLocation currentCursorLocation() const;
+
     // Resolves the identifier under the current cursor (variable->type
     // decode included, PRD 2.1) and notifies contextEngine_ -- called on
     // every cursor move, and by MainWindow when this view becomes the
@@ -110,10 +122,21 @@ signals:
     // this single signal to keep a tab's label (name + dirty marker) current.
     void tabLabelChanged();
 
+    // Cmd+click (Qt::ControlModifier, which Qt maps to the physical Cmd key
+    // on macOS) on an identifier: mousePressEvent() below has already
+    // moved the caret onto the clicked word before emitting this, so
+    // MainWindow's existing F12 handler (wordUnderCursor() +
+    // currentCursorLocation()) needs no changes to also serve clicks.
+    void gotoDefinitionRequested();
+
 private slots:
     void onTextChanged();
     void onExternalFileChanged(const QString &path);
     void onCursorPositionChanged(int line, int index);
+
+protected:
+    void mousePressEvent(QMouseEvent *event) override;
+    void mouseMoveEvent(QMouseEvent *event) override;
 
 private:
     void initStyles();

@@ -126,6 +126,24 @@ bool createDirectory(const std::filesystem::path &path) {
     return std::filesystem::create_directory(path, ec) && !ec;
 }
 
+std::optional<std::filesystem::path> findCompileCommandsDir(const std::filesystem::path &root) {
+    std::error_code ec;
+    if (std::filesystem::is_regular_file(root / "compile_commands.json", ec)) return root;
+
+    static constexpr std::array<const char *, 4> kConventionalBuildDirs = {
+        "build",
+        "out",
+        "cmake-build-debug",
+        "cmake-build-release",
+    };
+    for (const char *dirName : kConventionalBuildDirs) {
+        std::filesystem::path candidate = root / dirName;
+        if (std::filesystem::is_regular_file(candidate / "compile_commands.json", ec)) return candidate;
+    }
+
+    return std::nullopt;
+}
+
 ProjectModel::ProjectModel(IUiDispatcher &dispatcher) : dispatcher_(dispatcher) {}
 
 ProjectModel::~ProjectModel() {

@@ -12,6 +12,7 @@
 #include <QStatusBar>
 #include <QString>
 
+#include "ClangdStatusView.h"
 #include "ContextPaneView.h"
 #include "EditorView.h"
 #include "OutlineView.h"
@@ -23,8 +24,6 @@
 #include "xinsight/core/intel/SymbolIndex.h"
 #include "xinsight/core/project/ProjectModel.h"
 
-using xinsight::core::intel::ReferenceLocation;
-using xinsight::core::intel::SymbolLocation;
 using xinsight::core::nav::NavigationLocation;
 using xinsight::core::project::FileEntry;
 using xinsight::core::search::SearchOptions;
@@ -81,6 +80,14 @@ MainWindow::MainWindow(QWidget *parent)
     searchDock_->hide(); // stays out of the way until Cmd+Shift+F
     addDockWidget(Qt::BottomDockWidgetArea, searchDock_);
 
+    // PRD 8.4's clangd config diagnostic panel: pure status display, docked
+    // alongside Context by default since both are "ambient" panes.
+    clangdStatusView_ = new ClangdStatusView(this);
+    auto *clangdDock = new QDockWidget(tr("Clangd"), this);
+    clangdDock->setWidget(clangdStatusView_);
+    clangdDock->setFeatures(QDockWidget::DockWidgetMovable | QDockWidget::DockWidgetClosable);
+    addDockWidget(Qt::BottomDockWidgetArea, clangdDock);
+
     auto *fileMenu = menuBar()->addMenu(tr("&File"));
 
     auto *viewMenu = menuBar()->addMenu(tr("&View"));
@@ -92,6 +99,7 @@ MainWindow::MainWindow(QWidget *parent)
     viewMenu->addAction(outlineDock->toggleViewAction());
     viewMenu->addAction(contextDock->toggleViewAction());
     viewMenu->addAction(searchDock_->toggleViewAction());
+    viewMenu->addAction(clangdDock->toggleViewAction());
 
     auto *openProjectAction = fileMenu->addAction(tr("&Open Project..."));
     openProjectAction->setShortcut(QKeySequence(QStringLiteral("Ctrl+O")));
@@ -213,6 +221,14 @@ MainWindow::MainWindow(QWidget *parent)
     });
     codeIntelligence_.setOnIndexComplete([this]() { updateStatusForActiveEditor(); });
 
+    codeIntelligence_.setOnClangdStatusChanged([this](bool running) {
+        if (running) {
+            clangdStatusView_->showRunning();
+        } else {
+            clangdStatusView_->showFailed();
+        }
+    });
+
     contextEngine_.setOnContext(
         [this](xinsight::core::context::ContextResult result) { contextPaneView_->showResult(result); });
     connect(contextPaneView_, &ContextPaneView::drillDownRequested, this,
@@ -309,6 +325,7 @@ MainWindow::~MainWindow() {
 void MainWindow::onActiveEditorChanged(EditorView *editor) {
     disconnect(activeEditorReparsedConnection_);
     disconnect(activeEditorLabelConnection_);
+    disconnect(activeEditorGotoDefConnection_);
     activeEditor_ = editor;
 
     if (editor != nullptr) {
@@ -316,6 +333,8 @@ void MainWindow::onActiveEditorChanged(EditorView *editor) {
                                                    [this, editor]() { outlineView_->populate(editor->outline()); });
         activeEditorLabelConnection_ =
             connect(editor, &EditorView::tabLabelChanged, this, [this]() { updateStatusForActiveEditor(); });
+        activeEditorGotoDefConnection_ =
+            connect(editor, &EditorView::gotoDefinitionRequested, this, &MainWindow::jumpToDefinition);
         outlineView_->populate(editor->outline());
         // Switching panes/tabs doesn't itself move the cursor, but the
         // ambient context pane still needs to reflect wherever the newly
@@ -377,26 +396,22 @@ QString symbolKindLabel(xinsight::core::intel::SymbolKind kind) {
     return QString();
 }
 
-// Converts a symbol/reference index hit into the same SearchResult shape
-// ripgrep results use (PRD 3.3's unified panel model), so SearchPanel's
-// existing grouping/jump rendering can be reused verbatim for
+// Converts an async-routing symbol/reference hit into the same SearchResult
+// shape ripgrep results use (PRD 3.3's unified panel model), so
+// SearchPanel's existing grouping/jump rendering can be reused verbatim for
 // definitions/references/workspace-symbol results too -- a single
 // SubMatch carrying the name's own byte range doubles as the jump column,
 // since there's no ripgrep-style surrounding line text to highlight within.
-SearchResult toSearchResult(const SymbolLocation &loc) {
+// Carries a leading "[precise]"/"[fast]" marker (PRD 5.2/8.3: "UI 用一个小标识展示
+// 当前是精确还是快速模式") since QueryLocation candidates can come from
+// either engine and the panel doesn't otherwise distinguish them.
+SearchResult toSearchResult(const xinsight::core::intel::QueryLocation &loc, bool precise) {
     SearchResult result;
     result.path = loc.file;
     result.line = loc.startRow + 1;
-    result.preview = loc.name + " (" + symbolKindLabel(loc.kind).toStdString() + ")";
-    result.submatches.push_back({loc.startColumn, loc.startColumn + static_cast<uint32_t>(loc.name.size())});
-    return result;
-}
-
-SearchResult toSearchResult(const ReferenceLocation &loc) {
-    SearchResult result;
-    result.path = loc.file;
-    result.line = loc.startRow + 1;
-    result.preview = loc.name;
+    QString marker = precise ? QStringLiteral("[precise] ") : QStringLiteral("[fast] ");
+    QString kindSuffix = loc.kind ? QStringLiteral(" (%1)").arg(symbolKindLabel(*loc.kind)) : QString();
+    result.preview = marker.toStdString() + loc.name + kindSuffix.toStdString();
     result.submatches.push_back({loc.startColumn, loc.startColumn + static_cast<uint32_t>(loc.name.size())});
     return result;
 }
@@ -417,21 +432,28 @@ void MainWindow::jumpToDefinition() {
     QString word = activeEditor_->wordUnderCursor();
     if (word.isEmpty()) return;
 
-    auto defs = codeIntelligence_.findDefinition(word.toStdString());
-    if (defs.empty()) {
-        statusBar()->showMessage(tr("No definition found for '%1'").arg(word), 5000);
-        return;
-    }
-    if (defs.size() == 1) {
-        jumpTo(QString::fromStdString(defs[0].file), static_cast<int>(defs[0].startRow) + 1,
-               static_cast<int>(defs[0].startColumn));
-        return;
-    }
+    EditorView::CursorLocation cursor = activeEditor_->currentCursorLocation();
+    codeIntelligence_.findDefinitionAsync(
+        word.toStdString(), activeEditor_->filePath().toStdString(), static_cast<uint32_t>(cursor.row),
+        cursor.lineText.toStdString(), static_cast<uint32_t>(cursor.byteColumn),
+        [this, word](xinsight::core::intel::DefinitionResult result) {
+            if (result.candidates.empty()) {
+                statusBar()->showMessage(tr("No definition found for '%1'").arg(word), 5000);
+                return;
+            }
+            if (result.candidates.size() == 1) {
+                const auto &loc = result.candidates[0];
+                jumpTo(QString::fromStdString(loc.file), static_cast<int>(loc.startRow) + 1,
+                       static_cast<int>(loc.startColumn));
+                return;
+            }
 
-    std::vector<SearchResult> results;
-    results.reserve(defs.size());
-    for (const auto &def : defs) results.push_back(toSearchResult(def));
-    showSearchResults(tr("%1 definitions of '%2'").arg(defs.size()).arg(word), std::move(results));
+            std::vector<SearchResult> results;
+            results.reserve(result.candidates.size());
+            for (const auto &loc : result.candidates) results.push_back(toSearchResult(loc, result.precise));
+            showSearchResults(tr("%1 definitions of '%2'").arg(result.candidates.size()).arg(word),
+                               std::move(results));
+        });
 }
 
 void MainWindow::findReferencesAtCursor() {
@@ -439,16 +461,22 @@ void MainWindow::findReferencesAtCursor() {
     QString word = activeEditor_->wordUnderCursor();
     if (word.isEmpty()) return;
 
-    auto refs = codeIntelligence_.findReferences(word.toStdString());
-    if (refs.empty()) {
-        statusBar()->showMessage(tr("No references found for '%1'").arg(word), 5000);
-        return;
-    }
+    EditorView::CursorLocation cursor = activeEditor_->currentCursorLocation();
+    codeIntelligence_.findReferencesAsync(
+        word.toStdString(), activeEditor_->filePath().toStdString(), static_cast<uint32_t>(cursor.row),
+        cursor.lineText.toStdString(), static_cast<uint32_t>(cursor.byteColumn),
+        [this, word](xinsight::core::intel::ReferencesResult result) {
+            if (result.candidates.empty()) {
+                statusBar()->showMessage(tr("No references found for '%1'").arg(word), 5000);
+                return;
+            }
 
-    std::vector<SearchResult> results;
-    results.reserve(refs.size());
-    for (const auto &ref : refs) results.push_back(toSearchResult(ref));
-    showSearchResults(tr("%1 references to '%2'").arg(refs.size()).arg(word), std::move(results));
+            std::vector<SearchResult> results;
+            results.reserve(result.candidates.size());
+            for (const auto &loc : result.candidates) results.push_back(toSearchResult(loc, result.precise));
+            showSearchResults(tr("%1 references to '%2'").arg(result.candidates.size()).arg(word),
+                               std::move(results));
+        });
 }
 
 void MainWindow::promptWorkspaceSymbolSearch() {
@@ -462,16 +490,19 @@ void MainWindow::promptWorkspaceSymbolSearch() {
                                            QLineEdit::Normal, QString(), &ok);
     if (!ok || query.isEmpty()) return;
 
-    auto results = codeIntelligence_.searchWorkspaceSymbols(query.toStdString());
-    if (results.empty()) {
-        statusBar()->showMessage(tr("No symbols matching '%1'").arg(query), 5000);
-        return;
-    }
+    codeIntelligence_.searchWorkspaceSymbolsAsync(
+        query.toStdString(), 200, [this, query](xinsight::core::intel::WorkspaceSymbolResult result) {
+            if (result.candidates.empty()) {
+                statusBar()->showMessage(tr("No symbols matching '%1'").arg(query), 5000);
+                return;
+            }
 
-    std::vector<SearchResult> converted;
-    converted.reserve(results.size());
-    for (const auto &loc : results) converted.push_back(toSearchResult(loc));
-    showSearchResults(tr("%1 symbols matching '%2'").arg(results.size()).arg(query), std::move(converted));
+            std::vector<SearchResult> converted;
+            converted.reserve(result.candidates.size());
+            for (const auto &loc : result.candidates) converted.push_back(toSearchResult(loc, result.precise));
+            showSearchResults(tr("%1 symbols matching '%2'").arg(result.candidates.size()).arg(query),
+                               std::move(converted));
+        });
 }
 
 void MainWindow::jumpTo(const QString &absolutePath, int line, int column) {
@@ -544,5 +575,18 @@ void MainWindow::openProject() {
     if (dir.isEmpty()) return;
 
     statusBar()->showMessage(tr("Scanning %1...").arg(dir));
-    projectModel_.openRoot(dir.toStdString());
+    std::filesystem::path root(dir.toStdString());
+    projectModel_.openRoot(root);
+
+    // PRD 5.2/8.4: clangd is opt-in and best-effort -- only start it when a
+    // compile_commands.json is actually found, and tear down any previous
+    // project's instance either way so routing never silently keeps using a
+    // stale/wrong project's clangd.
+    auto compileCommandsDir = xinsight::core::project::findCompileCommandsDir(root);
+    if (compileCommandsDir) {
+        clangdStatusView_->showStarting();
+    } else {
+        clangdStatusView_->showNotConfigured();
+    }
+    codeIntelligence_.configureClangd(compileCommandsDir, root);
 }

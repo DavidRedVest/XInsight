@@ -5,9 +5,12 @@
 #include <fstream>
 #include <future>
 #include <memory>
+#include <nlohmann/json.hpp>
+#include <thread>
 
 #include "support/ImmediateUiDispatcher.h"
 #include "xinsight/core/intel/CodeIntelligence.h"
+#include "xinsight/core/lsp/LspClient.h"
 
 using namespace xinsight::core::intel;
 namespace fs = std::filesystem;
@@ -206,4 +209,168 @@ TEST_CASE("indexProject leaves previously indexed files alone when given a narro
 
     CHECK(intel.findDefinition("alpha_func").size() == 1); // re-verified, still present
     CHECK(intel.findDefinition("beta_func").size() == 1);  // untouched, not wiped
+}
+
+// ---------------------------------------------------------------------
+// Async routing (PRD 5.2): tree-sitter fallback when clangd isn't
+// configured, and real precise routing once it is (against real clangd).
+// ---------------------------------------------------------------------
+
+TEST_CASE("findDefinitionAsync: fires synchronously with precise=false when clangd isn't configured") {
+    TreeSitterEngine engine;
+    xinsight::core::testing::ImmediateUiDispatcher dispatcher;
+    CodeIntelligence intel(engine, std::make_shared<InMemorySymbolIndex>(), dispatcher);
+
+    ParsedDocument doc = engine.parse(Language::C, "int compute_widget(void) { return 1; }\n");
+    REQUIRE(doc.valid());
+    intel.updateFileIndex("/proj/widget.c", doc);
+
+    bool firedSynchronously = false;
+    DefinitionResult result;
+    intel.findDefinitionAsync("compute_widget", "/proj/main.c", 0, "", 0, [&](DefinitionResult r) {
+        result = std::move(r);
+        firedSynchronously = true;
+    });
+
+    CHECK(firedSynchronously); // no clangd configured -> immediate, not deferred
+    CHECK_FALSE(result.precise);
+    REQUIRE(result.candidates.size() == 1);
+    CHECK(result.candidates[0].file == "/proj/widget.c");
+    CHECK(result.candidates[0].name == "compute_widget");
+}
+
+TEST_CASE("findReferencesAsync/searchWorkspaceSymbolsAsync: also fall back synchronously without clangd") {
+    TreeSitterEngine engine;
+    xinsight::core::testing::ImmediateUiDispatcher dispatcher;
+    CodeIntelligence intel(engine, std::make_shared<InMemorySymbolIndex>(), dispatcher);
+
+    ParsedDocument doc = engine.parse(Language::C, "int compute_widget(void) { return compute_widget(); }\n");
+    REQUIRE(doc.valid());
+    intel.updateFileIndex("/proj/widget.c", doc);
+
+    bool refsFired = false;
+    intel.findReferencesAsync("compute_widget", "/proj/main.c", 0, "", 0, [&](ReferencesResult r) {
+        CHECK_FALSE(r.precise);
+        CHECK(r.candidates.size() == 2); // definition + the recursive call
+        refsFired = true;
+    });
+    CHECK(refsFired);
+
+    bool symbolsFired = false;
+    intel.searchWorkspaceSymbolsAsync("widget", 200, [&](WorkspaceSymbolResult r) {
+        CHECK_FALSE(r.precise);
+        REQUIRE(r.candidates.size() == 1);
+        CHECK(r.candidates[0].name == "compute_widget");
+        symbolsFired = true;
+    });
+    CHECK(symbolsFired);
+}
+
+TEST_CASE("notifyFileOpened/Changed/Saved: safe no-ops when clangd isn't configured") {
+    TreeSitterEngine engine;
+    xinsight::core::testing::ImmediateUiDispatcher dispatcher;
+    CodeIntelligence intel(engine, std::make_shared<InMemorySymbolIndex>(), dispatcher);
+
+    CHECK_FALSE(intel.isClangdConfigured());
+    intel.notifyFileOpened("/proj/main.c", "c", "int main(void) { return 0; }\n");
+    intel.notifyFileChanged("/proj/main.c", "int main(void) { return 1; }\n");
+    intel.notifyFileSaved("/proj/main.c");
+    // No crash, no hang -- that's the whole assertion.
+}
+
+namespace {
+
+bool clangdAvailable() {
+    static const bool available = [] {
+        xinsight::core::testing::ImmediateUiDispatcher dispatcher;
+        xinsight::core::lsp::LspClient client(dispatcher);
+        std::promise<bool> ready;
+        auto future = ready.get_future();
+        client.start({"clangd"}, "file:///tmp", [&](bool ok) { ready.set_value(ok); });
+        bool ok = future.wait_for(std::chrono::seconds(10)) == std::future_status::ready && future.get();
+        client.stop();
+        return ok;
+    }();
+    return available;
+}
+
+void writeCompileCommands(const fs::path &root, const std::vector<fs::path> &sourceFiles) {
+    nlohmann::json entries = nlohmann::json::array();
+    for (const fs::path &file : sourceFiles) {
+        entries.push_back({
+            {"directory", root.string()},
+            {"command", "cc -c " + file.string()},
+            {"file", file.string()},
+        });
+    }
+    std::ofstream out(root / "compile_commands.json", std::ios::binary);
+    out << entries.dump(2);
+}
+
+} // namespace
+
+TEST_CASE("findDefinitionAsync: routes to real clangd (precise=true) once the TU is ready") {
+    if (!clangdAvailable()) {
+        MESSAGE("clangd not available on PATH -- skipping real-server test");
+        return;
+    }
+
+    TempIndexDir dir;
+    fs::path fileA = dir.writeFile("a.c", "int compute_widget(int value) {\n    return value * 2;\n}\n"
+                                           "int main(void) {\n    int r = compute_widget(3);\n    return r;\n}\n");
+    writeCompileCommands(dir.root(), {fileA});
+
+    TreeSitterEngine engine;
+    xinsight::core::testing::ImmediateUiDispatcher dispatcher;
+    CodeIntelligence intel(engine, std::make_shared<InMemorySymbolIndex>(), dispatcher);
+
+    // Before configureClangd(): must behave exactly like M2/M3 (no
+    // regression) -- populate the tree-sitter index the usual way first.
+    {
+        std::promise<void> indexComplete;
+        auto indexFuture = indexComplete.get_future();
+        intel.setOnIndexComplete([&]() { indexComplete.set_value(); });
+        intel.indexProject({fileA});
+        REQUIRE(indexFuture.wait_for(std::chrono::seconds(10)) == std::future_status::ready);
+    }
+    auto fallback = intel.findDefinition("compute_widget");
+    REQUIRE(fallback.size() == 1);
+
+    std::promise<bool> clangdReady;
+    auto clangdReadyFuture = clangdReady.get_future();
+    intel.setOnClangdStatusChanged([&](bool running) { clangdReady.set_value(running); });
+    intel.configureClangd(dir.root(), dir.root());
+    REQUIRE(clangdReadyFuture.wait_for(std::chrono::seconds(10)) == std::future_status::ready);
+    REQUIRE(clangdReadyFuture.get());
+    REQUIRE(intel.isClangdConfigured());
+
+    std::ifstream in(fileA, std::ios::binary);
+    std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    intel.notifyFileOpened(fileA.string(), "c", text);
+
+    // Poll findDefinitionAsync until clangd's TU is ready (isFileReady()
+    // isn't directly observable through CodeIntelligence's public API, so
+    // just retry the actual call -- it transparently falls back to
+    // tree-sitter, precise=false, until then).
+    DefinitionResult result;
+    auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(20);
+    while (std::chrono::steady_clock::now() < deadline) {
+        std::string line5 = "    int r = compute_widget(3);";
+        uint32_t col = static_cast<uint32_t>(line5.find("compute_widget"));
+
+        std::promise<DefinitionResult> resultPromise;
+        auto resultFuture = resultPromise.get_future();
+        intel.findDefinitionAsync("compute_widget", fileA.string(), 4, line5, col,
+                                   [&](DefinitionResult r) { resultPromise.set_value(std::move(r)); });
+        REQUIRE(resultFuture.wait_for(std::chrono::seconds(15)) == std::future_status::ready);
+        result = resultFuture.get();
+
+        if (result.precise) break;
+        std::this_thread::sleep_for(std::chrono::milliseconds(200));
+    }
+
+    CHECK(result.precise);
+    REQUIRE_FALSE(result.candidates.empty());
+    CHECK(fs::canonical(result.candidates[0].file) == fs::canonical(fileA));
+    CHECK(result.candidates[0].startRow == 0); // `int compute_widget(int value) {`
 }

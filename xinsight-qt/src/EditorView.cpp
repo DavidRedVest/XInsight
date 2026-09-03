@@ -6,6 +6,7 @@
 #include <QFileSystemWatcher>
 #include <QFont>
 #include <QMessageBox>
+#include <QMouseEvent>
 #include <QPushButton>
 #include <Scintilla.h>
 #include <SciLexer.h>
@@ -137,6 +138,11 @@ bool EditorView::openFile(const QString &absolutePath) {
     document_ = engine_.parse(*language, text().toStdString());
     reparseAndRestyle();
     watchCurrentFile();
+
+    // No-op when clangd isn't configured (PRD 8.7's buffer-sync obligation
+    // only applies once the optional overlay is active).
+    codeIntelligence_.notifyFileOpened(filePath_.toStdString(), *language == Language::C ? "c" : "cpp",
+                                        text().toStdString());
     return true;
 }
 
@@ -177,6 +183,12 @@ bool EditorView::writeToDisk(const std::filesystem::path &path) {
     // extra reparse is needed here, just handing the already-fresh parse
     // to the index.
     if (document_) codeIntelligence_.updateFileIndex(path.string(), *document_);
+
+    // Same deferred-to-save cadence for the optional clangd overlay (no-op
+    // if it isn't configured): didChange brings its buffer view current,
+    // then didSave lets it re-run any save-triggered diagnostics.
+    codeIntelligence_.notifyFileChanged(path.string(), text().toStdString());
+    codeIntelligence_.notifyFileSaved(path.string());
 
     return true;
 }
@@ -343,10 +355,58 @@ int EditorView::currentByteOffset() const {
     return static_cast<int>(SendScintilla(SCI_GETCURRENTPOS));
 }
 
+EditorView::CursorLocation EditorView::currentCursorLocation() const {
+    long pos = SendScintilla(SCI_GETCURRENTPOS);
+    long row = SendScintilla(SCI_LINEFROMPOSITION, static_cast<unsigned long>(pos));
+    long linePos = SendScintilla(SCI_POSITIONFROMLINE, static_cast<unsigned long>(row));
+
+    QString lineText = text(static_cast<int>(row));
+    while (lineText.endsWith(QLatin1Char('\n')) || lineText.endsWith(QLatin1Char('\r'))) lineText.chop(1);
+
+    return CursorLocation{static_cast<int>(row), static_cast<int>(pos - linePos), lineText};
+}
+
 QString EditorView::wordUnderCursor() const {
     int line = 0, index = 0;
     getCursorPosition(&line, &index);
     return wordAtLineIndex(line, index);
+}
+
+void EditorView::mousePressEvent(QMouseEvent *event) {
+    // Cmd+click-to-jump (Windows/Linux IDE convention is Ctrl+click; Qt
+    // maps Qt::ControlModifier to the physical Cmd key on macOS, so this
+    // one check is already "Cmd" here without any #ifdef). Moves the caret
+    // onto the clicked word first, then defers to MainWindow's existing
+    // F12 handler via the signal -- it reads the word/position back off
+    // this same caret, so no jump-to-definition logic is duplicated here.
+    if (event->button() == Qt::LeftButton && (event->modifiers() & Qt::ControlModifier)) {
+        QPoint point = event->position().toPoint();
+        if (!wordAtPoint(point).isEmpty()) {
+            long pos = SendScintilla(SCI_POSITIONFROMPOINT, static_cast<long>(point.x()), static_cast<long>(point.y()));
+            if (pos >= 0) {
+                SendScintilla(SCI_GOTOPOS, static_cast<unsigned long>(pos));
+                setFocus();
+                emit gotoDefinitionRequested();
+                return;
+            }
+        }
+    }
+    QsciScintilla::mousePressEvent(event);
+}
+
+void EditorView::mouseMoveEvent(QMouseEvent *event) {
+    QsciScintilla::mouseMoveEvent(event);
+
+    // Hover affordance while Cmd is held, matching wordAtPoint()'s same
+    // "is there actually a clickable identifier here" check mousePressEvent
+    // uses -- so the cursor only changes where a click would actually jump.
+    bool overWord = (event->modifiers() & Qt::ControlModifier) &&
+                     !wordAtPoint(event->position().toPoint()).isEmpty();
+    if (overWord) {
+        viewport()->setCursor(Qt::PointingHandCursor);
+    } else {
+        viewport()->unsetCursor();
+    }
 }
 
 void EditorView::onCursorPositionChanged(int /*line*/, int /*index*/) { updateContextForCursor(); }

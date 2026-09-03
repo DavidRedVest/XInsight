@@ -1,4 +1,5 @@
 #include <QApplication>
+#include <QIcon>
 
 #include "MainWindow.h"
 
@@ -10,6 +11,11 @@ int main(int argc, char *argv[]) {
     // AppDataLocation under <org>/<app> when both are set, which would
     // produce ".../XInsight/XInsight" here.
     QCoreApplication::setApplicationName(QStringLiteral("XInsight"));
+    // Application-wide, not per-window: covers the Dock icon while running
+    // and every MainWindow's title-bar icon with one call. Packaging this
+    // as a signed/notarized .app with a proper .icns is deferred (PRD 9),
+    // so this is the icon until then.
+    app.setWindowIcon(QIcon(QStringLiteral(":/icons/code_view.svg")));
 
     MainWindow window;
     window.show();

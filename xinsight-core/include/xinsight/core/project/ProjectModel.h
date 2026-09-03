@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <functional>
+#include <optional>
 #include <string>
 #include <thread>
 #include <vector>
@@ -62,6 +63,19 @@ std::vector<FileEntry> scanDirectory(const std::filesystem::path &root, const Fi
 // overwrite or auto-create intermediate directories.
 bool createEmptyFile(const std::filesystem::path &path);
 bool createDirectory(const std::filesystem::path &path);
+
+// Locates compile_commands.json for `root` (PRD 5.4: ProjectModel owns
+// "compile db 定位"; PRD 8.4: CMake typically drops it at the build
+// directory's top level via -DCMAKE_EXPORT_COMPILE_COMMANDS=ON). Checks
+// `root` itself, then a handful of conventional build-directory names
+// within it. Returns the *directory containing* compile_commands.json
+// (what clangd's --compile-commands-dir wants), or nullopt if none of
+// those locations has one. Deliberately shallow (no recursive search):
+// PRD 5.6 already excludes build directories from the file tree/index,
+// so this is the one place that deliberately looks *into* them anyway,
+// and a handful of conventional names covers the common cases without
+// walking the whole tree hunting for it.
+std::optional<std::filesystem::path> findCompileCommandsDir(const std::filesystem::path &root);
 
 // Owns background scanning of a project root and marshals results back to
 // the UI thread via IUiDispatcher. Holds no file tree state itself --

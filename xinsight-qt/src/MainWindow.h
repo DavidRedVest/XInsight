@@ -19,6 +19,7 @@ class EditorView;
 class SplitManager;
 class SearchPanel;
 class ContextPaneView;
+class ClangdStatusView;
 class QDockWidget;
 
 class MainWindow final : public QMainWindow {
@@ -97,7 +98,9 @@ private:
     SearchPanel *searchPanel_ = nullptr;
     QDockWidget *searchDock_ = nullptr;
     ContextPaneView *contextPaneView_ = nullptr;
+    ClangdStatusView *clangdStatusView_ = nullptr;
     EditorView *activeEditor_ = nullptr;
     QMetaObject::Connection activeEditorReparsedConnection_;
     QMetaObject::Connection activeEditorLabelConnection_;
+    QMetaObject::Connection activeEditorGotoDefConnection_;
 };

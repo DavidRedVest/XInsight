@@ -44,7 +44,7 @@ XInsight/
 
 **GUI（`xinsight-qt`）**：
 
-- Qt 6（Widgets + PrintSupport）—— 需预先安装官方 Qt 6.8.3（或兼容版本），本仓库不 vendor Qt 本体
+- Qt 6（Widgets + PrintSupport + Svg）—— 需预先安装官方 Qt 6.8.3（或兼容版本），本仓库不 vendor Qt 本体
 - [QScintilla](https://www.riverbankcomputing.com/software/qscintilla/)（vendor 源码 + 自写 CMake target，链接本机已装的 Qt）
 
 **外部子进程工具**（运行时调用，不参与链接）：[ripgrep](https://github.com/BurntSushi/ripgrep)（`rg`，必需）、`clangd`（可选，P1+ 精确层）。
@@ -62,10 +62,10 @@ cmake --preset core-only
 cmake --build build/core-only -j
 ```
 
-运行 GUI：
+运行 GUI（目前是普通可执行文件，尚未打包成签名的 `.app`，见下方"当前进度"）：
 
 ```bash
-open build/default/xinsight-qt/xinsight-qt.app
+./build/default/xinsight-qt/xinsight-qt
 ```
 
 ## 测试
@@ -81,9 +81,10 @@ ctest --test-dir build/default
 ## 当前进度
 
 - [x] **M1**：核心骨架、tree-sitter 高亮/折叠/大纲、ripgrep 文本搜索、项目文件树、基础编辑闭环（保存/新建/另存为/撤销/外部改动检测/多编码读写）、可加载主题结构
-- [ ] **M2**：符号索引（`InMemorySymbolIndex`）、跳转定义/查引用/工作区符号搜索
-- [ ] **M3**：`ContextEngine` 光标跟随上下文侧栏
-- [ ] **M4**：`LspClient` + clangd 精确层、会话恢复、面包屑
+- [x] **M2**：符号索引（`InMemorySymbolIndex`）、跳转定义/查引用/工作区符号搜索
+- [x] **M3**：`ContextEngine` 光标跟随上下文侧栏（含变量→类型解码、候选排序、下钻）
+- [x] **M4**（大部分完成）：`LspClient` + `ClangdProvider` clangd 精确层、`CodeIntelligence` 按 §5.2 路由（自动探测 `compile_commands.json`，找到就升级为 precise、找不到零配置回退不回归）、`ClangdStatusView` 状态面板、F12/Shift+F12/Cmd+T 及 Cmd+点击跳转的 precise/fast 标记。**未完成**：会话恢复、面包屑
+- [ ] 打包/签名/公证（PRD 明确推迟到 v1 收尾或 v2）
 
 里程碑定义详见 PRD 第 7 节。
 

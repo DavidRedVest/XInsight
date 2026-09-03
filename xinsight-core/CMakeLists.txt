@@ -13,6 +13,8 @@ add_library(xinsight-core STATIC
   src/intel/InMemorySymbolIndex.cpp
   src/intel/CodeIntelligence.cpp
   src/context/ContextEngine.cpp
+  src/lsp/LspClient.cpp
+  src/lsp/ClangdProvider.cpp
   src/project/ProjectModel.cpp
   src/encoding/TextCodec.cpp
   src/search/SearchEngine.cpp
